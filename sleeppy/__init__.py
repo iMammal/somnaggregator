@@ -10,7 +10,14 @@ from .quality import (
     observations_to_nightly_summary,
 )
 from .resample import resample_timelines
-from .schema import CANONICAL_METRICS, PLOT_METRICS, SleepTimeline, normalize_metric_name
+from .schema import (
+    CANONICAL_METRICS,
+    OPTIONAL_DEVICE_METRICS,
+    OPTIONAL_PLOT_METRICS,
+    PLOT_METRICS,
+    SleepTimeline,
+    normalize_metric_name,
+)
 from .timeline import align_timelines, make_timeline
 from .viz import (
     plot_cpap_panel,
@@ -22,6 +29,8 @@ from .viz import (
 __all__ = [
     "SleepTimeline",
     "CANONICAL_METRICS",
+    "OPTIONAL_DEVICE_METRICS",
+    "OPTIONAL_PLOT_METRICS",
     "PLOT_METRICS",
     "align_timelines",
     "check_ocr_environment",

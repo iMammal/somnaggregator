@@ -102,6 +102,17 @@ PLOT_METRICS = [
     "avg_spo2_pct",
     "cpap_ahi",
 ]
+OPTIONAL_DEVICE_METRICS = {
+    "cpap": [
+        "cpap_ahi",
+        "cpap_usage_hours",
+        "cpap_leak_rate",
+        "cpap_pressure",
+        "cpap_cai",
+        "cpap_oai",
+    ],
+}
+OPTIONAL_PLOT_METRICS = ["cpap_ahi"]
 CANONICAL_METRIC_UNITS = {
     "total_sleep_minutes": "minutes",
     "time_in_bed_minutes": "minutes",

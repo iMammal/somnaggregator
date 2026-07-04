@@ -10,6 +10,8 @@ from .schema import (
     CANONICAL_METRICS,
     NIGHTLY_SUMMARY_COLUMNS,
     OBSERVATION_COLUMNS,
+    OPTIONAL_DEVICE_METRICS,
+    OPTIONAL_PLOT_METRICS,
     PLOT_METRICS,
     SUMMARY_VALUE_METRICS,
     ensure_observations_frame,
@@ -116,11 +118,26 @@ def describe_extraction_outputs(
         for metric in CANONICAL_METRICS
         if (metric in metric_names) or (metric in summary.columns and summary[metric].notna().any())
     ]
+    optional_plot_metrics = set(OPTIONAL_PLOT_METRICS)
     expected_missing = [
         metric
         for metric in expected
-        if metric not in summary.columns or not pd.to_numeric(summary[metric], errors="coerce").notna().any()
+        if metric not in optional_plot_metrics
+        and (metric not in summary.columns or not pd.to_numeric(summary[metric], errors="coerce").notna().any())
     ]
+    optional_missing = [
+        metric
+        for metric in expected
+        if metric in optional_plot_metrics
+        and (metric not in summary.columns or not pd.to_numeric(summary[metric], errors="coerce").notna().any())
+    ]
+    cpap_metrics = OPTIONAL_DEVICE_METRICS["cpap"]
+    cpap_metrics_detected = [
+        metric
+        for metric in cpap_metrics
+        if (metric in metric_names) or (metric in summary.columns and summary[metric].notna().any())
+    ]
+    cpap_detected = bool(cpap_metrics_detected)
     source_files = sorted(obs["source_file"].dropna().unique().tolist()) if not obs.empty else []
 
     diagnostics = {
@@ -130,6 +147,9 @@ def describe_extraction_outputs(
         "metric_names_detected": metric_names,
         "canonical_metrics_available": canonical_available,
         "expected_plot_metrics_missing": expected_missing,
+        "optional_plot_metrics_missing": optional_missing,
+        "cpap_detected": cpap_detected,
+        "cpap_metrics_detected": cpap_metrics_detected,
         "source_files": source_files,
         "nightly_summary_columns": list(summary.columns),
     }
@@ -140,7 +160,13 @@ def describe_extraction_outputs(
         print("Devices detected:", ", ".join(devices) if devices else "(none)")
         print("Metric names detected:", ", ".join(metric_names) if metric_names else "(none)")
         print("Canonical metrics available:", ", ".join(canonical_available) if canonical_available else "(none)")
-        print("Expected plot metrics missing:", ", ".join(expected_missing) if expected_missing else "(none)")
+        if cpap_detected:
+            print("CPAP metrics detected:", ", ".join(cpap_metrics_detected))
+        else:
+            print("No CPAP metrics detected; CPAP/OSCAR/SleepScope is optional.")
+        print("Required plot metrics missing:", ", ".join(expected_missing) if expected_missing else "(none)")
+        if optional_missing:
+            print("Optional plot metrics unavailable:", ", ".join(optional_missing))
         print("Source files contributing values:")
         if source_files:
             for source_file in source_files:
@@ -193,8 +219,8 @@ def build_extraction_report(
         f"- Extracted values: {len(observations)}",
     ]
 
+    diagnostics = describe_extraction_outputs(nightly_summary, observations, print_output=False)
     if not observations.empty:
-        diagnostics = describe_extraction_outputs(nightly_summary, observations, print_output=False)
         lines.extend(["", "## Values By Device", ""])
         counts = observations.groupby("device").size().sort_index()
         lines.extend([f"- {device}: {count}" for device, count in counts.items()])
@@ -213,6 +239,12 @@ def build_extraction_report(
                 for row in confidence.itertuples(index=False)
             ]
         )
+
+    lines.extend(["", "## Optional CPAP Status", ""])
+    if diagnostics["cpap_detected"]:
+        lines.extend([f"- CPAP metrics detected: {', '.join(diagnostics['cpap_metrics_detected'])}"])
+    else:
+        lines.append("- No CPAP metrics detected; CPAP/OSCAR/SleepScope is optional.")
 
     if report_lines:
         lines.extend(["", "## File Notes", ""])

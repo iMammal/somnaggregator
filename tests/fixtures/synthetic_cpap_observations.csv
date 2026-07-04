@@ -1,0 +1,5 @@
+night_date,device,metric,value,unit,source_file,extraction_method,confidence,notes
+2099-01-01,Synthetic CPAP,cpap_ahi,1.2,events/hour,tests/fixtures/synthetic_cpap.txt,parsed_text,high,synthetic fixture
+2099-01-01,Synthetic CPAP,cpap_usage_hours,7.5,hours,tests/fixtures/synthetic_cpap.txt,parsed_text,high,synthetic fixture
+2099-01-01,Synthetic CPAP,cpap_leak_rate,3.4,L/min,tests/fixtures/synthetic_cpap.txt,parsed_text,high,synthetic fixture
+2099-01-01,Synthetic CPAP,cpap_pressure,9.8,cmH2O,tests/fixtures/synthetic_cpap.txt,parsed_text,high,synthetic fixture

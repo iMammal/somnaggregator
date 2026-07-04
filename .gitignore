@@ -1,0 +1,28 @@
+# IDE and local environment
+.idea/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+
+# Generated analysis outputs
+data/interim/*
+!data/interim/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+outputs/*
+!outputs/.gitkeep
+
+# Real personal health data should not be committed.
+data/raw/*
+!data/raw/.gitkeep
+!data/raw/samples/
+!data/raw/samples/**/
+!data/raw/samples/**/.gitkeep
+
+# Synthetic/de-identified test fixtures are safe to track.
+!tests/fixtures/
+!tests/fixtures/**

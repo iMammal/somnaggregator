@@ -10,6 +10,8 @@ SleepPy is a personal sleep-analysis workspace for aligning and comparing nightl
 
 This project is for exploratory wellness analysis only. It is not medical diagnosis, treatment advice, or a replacement for clinician review.
 
+CPAP/OSCAR/SleepScope support is optional. If no CPAP files are present, extraction and notebook diagnostics should report that no CPAP metrics were detected without treating that as a failure.
+
 ## Project Structure
 
 ```text
@@ -50,6 +52,8 @@ sample.ipynb   # Main extraction and analysis notebook
    - `data/raw/samples/samsung_watch/`
    - `data/raw/samples/muse/`
    - `data/raw/samples/oscar/`
+
+   Real screenshots, PDFs, exports, and reports contain personal health data and should stay out of git. The repository ignores raw data by default and only preserves sample directory placeholders with `.gitkeep`.
 3. Run first-pass extraction:
 
    ```powershell
@@ -81,6 +85,8 @@ The first-pass extractor creates two normalized files:
 
 The extractor prefers PDF parsed text with PyMuPDF, then OCR with pytesseract, then a manual-fallback note. It does not try to digitize line graphs. It only extracts summary metrics and simple CPAP summary text at this stage.
 
+If no CPAP/OSCAR/SleepScope files are present, `cpap_ahi`, `cpap_usage_hours`, `cpap_leak_rate`, and `cpap_pressure` remain empty. This is expected for non-CPAP datasets.
+
 On Windows, `pytesseract` still needs the separate Tesseract executable. Install it and make sure `tesseract.exe` is on PATH, or set `pytesseract.pytesseract.tesseract_cmd` in a notebook cell.
 
 Check the active notebook/kernel OCR setup with:
@@ -109,7 +115,7 @@ The notebook trend plots look for these canonical plotting metrics:
 - `total_sleep_minutes`
 - `avg_hrv_ms`
 - `avg_spo2_pct`
-- `cpap_ahi`
+- `cpap_ahi` when CPAP data is present
 
 Metrics can be extracted but still not plottable as trends if the source screenshot/PDF does not expose a parseable `night_date`. In that case the value remains in `device_observations_long.csv` and is grouped as `undated` in `nightly_summary.csv`.
 
@@ -122,6 +128,23 @@ diagnostics = describe_extraction_outputs(nightly_summary, observations)
 ```
 
 It reports row counts, devices, detected metric names, canonical metrics available, plotting metrics missing, and source files that contributed values.
+
+## Git Hygiene And Fixtures
+
+The root `.gitignore` excludes:
+
+- `.idea/`
+- Python caches, pytest cache, notebook checkpoints, and virtualenvs
+- generated `data/interim/`, `data/processed/`, and `outputs/`
+- real raw health data under `data/raw/`
+
+Only `.gitkeep` placeholders are intended to keep empty raw sample directories visible. Synthetic or de-identified test fixtures under `tests/fixtures/` are safe to track.
+
+If IDE files were already staged or tracked before `.gitignore` was added, untrack them without deleting your local PyCharm settings:
+
+```powershell
+git rm -r --cached .idea
+```
 
 ## Planned Import Pipeline
 
