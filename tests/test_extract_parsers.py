@@ -28,7 +28,7 @@ def test_parse_average_hrv():
         extraction_method="ocr",
         confidence="medium",
     )
-    assert _metric_value(rows, "avg_hrv") == 24
+    assert _metric_value(rows, "avg_hrv_ms") == 24
 
 
 def test_parse_ahi():
@@ -48,5 +48,5 @@ def test_parse_mask_time_hms():
         extraction_method="parsed_text",
         confidence="high",
     )
-    assert _metric_value(rows, "cpap_mask_minutes") == 99
+    assert _metric_value(rows, "cpap_usage_hours") == 1.65
     assert parse_duration_to_minutes("1 hours, 39 minutes, 0 seconds") == 99

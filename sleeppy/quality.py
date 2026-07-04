@@ -7,10 +7,13 @@ from pathlib import Path
 import pandas as pd
 
 from .schema import (
+    CANONICAL_METRICS,
     NIGHTLY_SUMMARY_COLUMNS,
     OBSERVATION_COLUMNS,
+    PLOT_METRICS,
     SUMMARY_VALUE_METRICS,
     ensure_observations_frame,
+    normalize_summary_columns,
 )
 
 
@@ -32,10 +35,10 @@ def select_best_observations(observations: pd.DataFrame) -> pd.DataFrame:
 
     ranked = df.assign(_confidence_rank=df["confidence"].map(confidence_rank))
     ranked = ranked.sort_values(
-        ["date", "device", "metric", "_confidence_rank", "extraction_method"],
+        ["night_date", "device", "metric", "_confidence_rank", "extraction_method"],
         ascending=[True, True, True, False, True],
     )
-    return ranked.drop_duplicates(["date", "device", "metric"], keep="first").drop(columns="_confidence_rank")
+    return ranked.drop_duplicates(["night_date", "device", "metric"], keep="first").drop(columns="_confidence_rank")
 
 
 def observations_to_nightly_summary(observations: pd.DataFrame) -> pd.DataFrame:
@@ -46,9 +49,9 @@ def observations_to_nightly_summary(observations: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=NIGHTLY_SUMMARY_COLUMNS)
 
     best = best.copy()
-    best["date"] = best["date"].astype("object").where(best["date"].notna(), "undated")
+    best["night_date"] = best["night_date"].astype("object").where(best["night_date"].notna(), "undated")
     values = (
-        best.pivot_table(index=["date", "device"], columns="metric", values="value", aggfunc="first")
+        best.pivot_table(index=["night_date", "device"], columns="metric", values="value", aggfunc="first")
         .reset_index()
         .rename_axis(columns=None)
     )
@@ -56,14 +59,14 @@ def observations_to_nightly_summary(observations: pd.DataFrame) -> pd.DataFrame:
         if metric not in values:
             values[metric] = pd.NA
 
-    provenance = best.groupby(["date", "device"]).agg(
+    provenance = best.groupby(["night_date", "device"]).agg(
         source_files=("source_file", lambda values: "; ".join(sorted(set(map(str, values))))),
         extraction_methods=("extraction_method", lambda values: "; ".join(sorted(set(map(str, values))))),
         min_confidence=("confidence", _min_confidence),
         notes=("notes", _combine_notes),
     )
-    summary = values.merge(provenance.reset_index(), on=["date", "device"], how="left")
-    return summary[NIGHTLY_SUMMARY_COLUMNS].sort_values(["date", "device"]).reset_index(drop=True)
+    summary = values.merge(provenance.reset_index(), on=["night_date", "device"], how="left")
+    return normalize_summary_columns(summary).sort_values(["night_date", "device"]).reset_index(drop=True)
 
 
 def missingness_by_device(nightly_summary: pd.DataFrame) -> pd.DataFrame:
@@ -92,6 +95,60 @@ def confidence_by_device(observations: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=["device", "confidence", "count"])
     return df.groupby(["device", "confidence"]).size().reset_index(name="count")
+
+
+def describe_extraction_outputs(
+    nightly_summary: pd.DataFrame,
+    observations: pd.DataFrame,
+    expected_plot_metrics: list[str] | None = None,
+    print_output: bool = True,
+) -> dict[str, object]:
+    """Describe extracted outputs and clearly report plot-target availability."""
+
+    expected = expected_plot_metrics or PLOT_METRICS
+    summary = normalize_summary_columns(nightly_summary) if nightly_summary is not None else pd.DataFrame(columns=NIGHTLY_SUMMARY_COLUMNS)
+    obs = ensure_observations_frame(observations) if observations is not None else pd.DataFrame(columns=OBSERVATION_COLUMNS)
+
+    devices = sorted(set(summary.get("device", pd.Series(dtype=str)).dropna()) | set(obs.get("device", pd.Series(dtype=str)).dropna()))
+    metric_names = sorted(obs["metric"].dropna().unique().tolist()) if not obs.empty else []
+    canonical_available = [
+        metric
+        for metric in CANONICAL_METRICS
+        if (metric in metric_names) or (metric in summary.columns and summary[metric].notna().any())
+    ]
+    expected_missing = [
+        metric
+        for metric in expected
+        if metric not in summary.columns or not pd.to_numeric(summary[metric], errors="coerce").notna().any()
+    ]
+    source_files = sorted(obs["source_file"].dropna().unique().tolist()) if not obs.empty else []
+
+    diagnostics = {
+        "nightly_rows": int(len(summary)),
+        "observation_rows": int(len(obs)),
+        "devices_detected": devices,
+        "metric_names_detected": metric_names,
+        "canonical_metrics_available": canonical_available,
+        "expected_plot_metrics_missing": expected_missing,
+        "source_files": source_files,
+        "nightly_summary_columns": list(summary.columns),
+    }
+
+    if print_output:
+        print(f"Night/device rows: {diagnostics['nightly_rows']}")
+        print(f"Observation rows: {diagnostics['observation_rows']}")
+        print("Devices detected:", ", ".join(devices) if devices else "(none)")
+        print("Metric names detected:", ", ".join(metric_names) if metric_names else "(none)")
+        print("Canonical metrics available:", ", ".join(canonical_available) if canonical_available else "(none)")
+        print("Expected plot metrics missing:", ", ".join(expected_missing) if expected_missing else "(none)")
+        print("Source files contributing values:")
+        if source_files:
+            for source_file in source_files:
+                print(f"  - {source_file}")
+        else:
+            print("  - (none)")
+
+    return diagnostics
 
 
 def write_extraction_outputs(
@@ -137,9 +194,16 @@ def build_extraction_report(
     ]
 
     if not observations.empty:
+        diagnostics = describe_extraction_outputs(nightly_summary, observations, print_output=False)
         lines.extend(["", "## Values By Device", ""])
         counts = observations.groupby("device").size().sort_index()
         lines.extend([f"- {device}: {count}" for device, count in counts.items()])
+
+        lines.extend(["", "## Canonical Metrics Available", ""])
+        if diagnostics["canonical_metrics_available"]:
+            lines.extend([f"- {metric}" for metric in diagnostics["canonical_metrics_available"]])
+        else:
+            lines.append("- (none)")
 
         lines.extend(["", "## Confidence By Device", ""])
         confidence = confidence_by_device(observations)

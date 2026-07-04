@@ -26,17 +26,22 @@ METRIC_BOUNDS = {
     "rem_minutes": (0, 480),
     "light_minutes": (0, 720),
     "deep_minutes": (0, 360),
-    "lowest_hr": (25, 120),
-    "avg_hr": (25, 140),
-    "avg_hrv": (5, 250),
-    "max_hrv": (5, 400),
-    "avg_spo2": (70, 100),
-    "respiratory_rate": (5, 40),
+    "min_hr_bpm": (25, 120),
+    "avg_hr_bpm": (25, 140),
+    "avg_hrv_ms": (5, 250),
+    "max_hrv_ms": (5, 400),
+    "hrv_balance_score": (0, 100),
+    "avg_spo2_pct": (70, 100),
+    "min_spo2_pct": (50, 100),
+    "respiratory_rate_bpm": (5, 40),
+    "temperature_deviation_c": (-5, 5),
+    "readiness_score": (0, 100),
     "cpap_ahi": (0, 120),
     "cpap_cai": (0, 120),
     "cpap_oai": (0, 120),
-    "cpap_pressure_95": (0, 30),
-    "cpap_leak": (0, 200),
+    "cpap_pressure": (0, 30),
+    "cpap_leak_rate": (0, 200),
+    "cpap_usage_hours": (0, 24),
 }
 
 
@@ -283,7 +288,7 @@ def observation(
     """Create one normalized observation row."""
 
     return {
-        "date": date,
+        "night_date": date,
         "device": device,
         "metric": metric,
         "value": value,
@@ -307,6 +312,8 @@ def add_duration_observation(
     extraction_method: str,
     confidence: str,
     notes: str,
+    unit: str = "minutes",
+    value_transform: Callable[[float], float] | None = None,
 ) -> None:
     """Append a duration observation if one of the label patterns matches."""
 
@@ -318,14 +325,19 @@ def add_duration_observation(
         )
         if match:
             minutes = parse_duration_to_minutes(match.group("duration"))
-            if minutes is not None and _within_metric_bounds(metric, float(minutes)):
+            value = None if minutes is None else float(minutes)
+            if value is not None and value_transform is not None:
+                value = value_transform(value)
+            if value is not None and _within_metric_bounds(metric, float(value)):
+                if float(value).is_integer():
+                    value = int(value)
                 rows.append(
                     observation(
                         date=date,
                         device=device,
                         metric=metric,
-                        value=minutes,
-                        unit="minutes",
+                        value=value,
+                        unit=unit,
                         source_file=source_file,
                         extraction_method=extraction_method,
                         confidence=confidence,
@@ -354,7 +366,7 @@ def add_number_observation(
 
     for label_pattern in label_patterns:
         match = re.search(
-            rf"{label_pattern}\s*[:\-]?\s*(?P<value>\d+(?:\.\d+)?)",
+            rf"{label_pattern}\s*[:\-]?\s*(?P<value>[+-]?\d+(?:\.\d+)?)",
             text,
             flags=re.IGNORECASE,
         )
@@ -404,7 +416,7 @@ def parse_wellness_text(
     date = infer_date(text, source_file)
     rows: list[dict[str, object]] = []
     specs = [
-        ("total_sleep_minutes", ["(?:total\\s+)?sleep", "time\\s+asleep"], "minutes", "duration"),
+        ("total_sleep_minutes", ["(?:total\\s+)?sleep", "sleep\\s+duration", "time\\s+asleep", "asleep"], "minutes", "duration"),
         ("time_in_bed_minutes", ["time\\s+in\\s+bed", "in\\s+bed"], "minutes", "duration"),
         ("awake_minutes", ["awake", "wake"], "minutes", "duration"),
         ("rem_minutes", ["rem"], "minutes", "duration"),
@@ -412,12 +424,16 @@ def parse_wellness_text(
         ("deep_minutes", ["deep"], "minutes", "duration"),
         ("sleep_score", ["sleep\\s+score", "\\bscore"], "score", "number"),
         ("sleep_efficiency_pct", ["sleep\\s+efficiency", "efficiency"], "pct", "number"),
-        ("lowest_hr", ["lowest\\s+(?:heart\\s+rate|hr)", "min(?:imum)?\\s+(?:heart\\s+rate|hr)"], "bpm", "number"),
-        ("avg_hr", ["average\\s+(?:heart\\s+rate|hr)", "avg\\.?\\s*(?:heart\\s+rate|hr)"], "bpm", "number"),
-        ("avg_hrv", ["average\\s+hrv", "avg\\.?\\s*hrv"], "ms", "number"),
-        ("max_hrv", ["max(?:imum)?\\s+hrv"], "ms", "number"),
-        ("avg_spo2", ["average\\s+spo2", "avg\\.?\\s*spo2", "oxygen\\s+saturation"], "pct", "number"),
-        ("respiratory_rate", ["respiratory\\s+rate", "respiration\\s+rate"], "breaths/min", "number"),
+        ("min_hr_bpm", ["lowest\\s+(?:heart\\s+rate|hr)", "min(?:imum)?\\s+(?:heart\\s+rate|hr)"], "bpm", "number"),
+        ("avg_hr_bpm", ["average\\s+(?:heart\\s+rate|hr)", "avg\\.?\\s*(?:heart\\s+rate|hr)"], "bpm", "number"),
+        ("avg_hrv_ms", ["average\\s+hrv", "avg\\.?\\s*hrv"], "ms", "number"),
+        ("max_hrv_ms", ["max(?:imum)?\\s+hrv"], "ms", "number"),
+        ("hrv_balance_score", ["hrv\\s+balance"], "score", "number"),
+        ("avg_spo2_pct", ["average\\s+spo2", "avg\\.?\\s*spo2", "average\\s+oxygen", "avg\\.?\\s*oxygen", "oxygen\\s+saturation", "\\bspo2"], "pct", "number"),
+        ("min_spo2_pct", ["lowest\\s+spo2", "min(?:imum)?\\s+spo2", "lowest\\s+oxygen", "min(?:imum)?\\s+oxygen"], "pct", "number"),
+        ("respiratory_rate_bpm", ["respiratory\\s+rate", "respiration\\s+rate"], "breaths/min", "number"),
+        ("temperature_deviation_c", ["temperature\\s+deviation", "temp\\.?\\s+deviation"], "C", "number"),
+        ("readiness_score", ["readiness\\s+score", "\\breadiness"], "score", "number"),
     ]
 
     for metric, patterns, unit, kind in specs:
@@ -488,7 +504,7 @@ def parse_cpap_text(
     add_duration_observation(
         rows,
         text,
-        metric="cpap_mask_minutes",
+        metric="cpap_usage_hours",
         label_patterns=["mask\\s+time", "usage", "cpap\\s+usage"],
         date=date,
         device=device,
@@ -496,13 +512,15 @@ def parse_cpap_text(
         extraction_method=extraction_method,
         confidence=confidence,
         notes=notes,
+        unit="hours",
+        value_transform=lambda minutes: round(minutes / 60, 3),
     )
     number_specs = [
-        ("cpap_ahi", ["\\bahi"], "events/hour"),
+        ("cpap_ahi", ["\\bahi", "events\\s*/\\s*hour", "events\\s+per\\s+hour"], "events/hour"),
         ("cpap_cai", ["\\bcai", "clear\\s+airway\\s+index"], "events/hour"),
         ("cpap_oai", ["\\boai", "obstructive\\s+apnea\\s+index"], "events/hour"),
-        ("cpap_pressure_95", ["95%?\\s+(?:pressure|press)", "pressure\\s+95%?"], "cmH2O"),
-        ("cpap_leak", ["(?:95%?\\s+)?leak(?:\\s+rate)?", "large\\s+leak"], "L/min"),
+        ("cpap_pressure", ["95%?\\s+(?:pressure|press)", "pressure\\s+95%?", "\\bpressure"], "cmH2O"),
+        ("cpap_leak_rate", ["mask\\s+leak", "(?:95%?\\s+)?leak(?:\\s+rate)?", "large\\s+leak"], "L/min"),
     ]
     for metric, patterns, unit in number_specs:
         add_number_observation(

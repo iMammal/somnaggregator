@@ -3,9 +3,14 @@
 from .compare import metric_pivot, stage_disagreement_matrix, stage_pivot, summarize_by_device_night
 from .extract import check_ocr_environment, run_sample_extraction
 from .loaders import load_manual_summaries, parse_sleep_window, summaries_to_timelines
-from .quality import confidence_by_device, missingness_by_device, observations_to_nightly_summary
+from .quality import (
+    confidence_by_device,
+    describe_extraction_outputs,
+    missingness_by_device,
+    observations_to_nightly_summary,
+)
 from .resample import resample_timelines
-from .schema import SleepTimeline
+from .schema import CANONICAL_METRICS, PLOT_METRICS, SleepTimeline, normalize_metric_name
 from .timeline import align_timelines, make_timeline
 from .viz import (
     plot_cpap_panel,
@@ -16,6 +21,8 @@ from .viz import (
 
 __all__ = [
     "SleepTimeline",
+    "CANONICAL_METRICS",
+    "PLOT_METRICS",
     "align_timelines",
     "check_ocr_environment",
     "load_manual_summaries",
@@ -27,7 +34,9 @@ __all__ = [
     "plot_sleep_stage_timeline",
     "plot_stage_disagreement_heatmap",
     "confidence_by_device",
+    "describe_extraction_outputs",
     "missingness_by_device",
+    "normalize_metric_name",
     "observations_to_nightly_summary",
     "resample_timelines",
     "run_sample_extraction",
