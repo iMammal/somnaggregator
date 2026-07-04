@@ -250,6 +250,11 @@ def build_extraction_report(
         lines.extend(["", "## File Notes", ""])
         lines.extend([f"- {line}" for line in report_lines])
 
+    warnings = check_physiological_sanity(nightly_summary)
+    if warnings:
+        lines.extend(["", "## Extraction Warnings", ""])
+        lines.extend([f"- {warning}" for warning in warnings])
+
     lines.extend(
         [
             "",
@@ -279,3 +284,61 @@ def _min_confidence(values: pd.Series) -> str:
 def _combine_notes(values: pd.Series) -> str:
     notes = [str(value).strip() for value in values.dropna() if str(value).strip()]
     return "; ".join(sorted(set(notes)))
+
+
+def check_physiological_sanity(nightly_summary: pd.DataFrame) -> list[str]:
+    warnings = []
+    if nightly_summary.empty:
+        return warnings
+
+    # - avg_spo2_pct should usually be 70-100
+    if "avg_spo2_pct" in nightly_summary.columns:
+        suspicious = nightly_summary[~nightly_summary["avg_spo2_pct"].isna() &
+                                     ((nightly_summary["avg_spo2_pct"] < 70) | (nightly_summary["avg_spo2_pct"] > 100))]
+        for _, row in suspicious.iterrows():
+            warnings.append(f"Suspicious avg_spo2_pct={row['avg_spo2_pct']} on {row['night_date']} for {row['device']}. Check OCR/source image.")
+
+    # - avg_hr_bpm should usually be 30-220
+    if "avg_hr_bpm" in nightly_summary.columns:
+        suspicious = nightly_summary[~nightly_summary["avg_hr_bpm"].isna() &
+                                     ((nightly_summary["avg_hr_bpm"] < 30) | (nightly_summary["avg_hr_bpm"] > 220))]
+        for _, row in suspicious.iterrows():
+            warnings.append(f"Suspicious avg_hr_bpm={row['avg_hr_bpm']} on {row['night_date']} for {row['device']}.")
+
+    # - min_hr_bpm should usually be 25-180
+    if "min_hr_bpm" in nightly_summary.columns:
+        suspicious = nightly_summary[~nightly_summary["min_hr_bpm"].isna() &
+                                     ((nightly_summary["min_hr_bpm"] < 25) | (nightly_summary["min_hr_bpm"] > 180))]
+        for _, row in suspicious.iterrows():
+            warnings.append(f"Suspicious min_hr_bpm={row['min_hr_bpm']} on {row['night_date']} for {row['device']}.")
+
+    # - sleep_efficiency_pct should be 0-100
+    if "sleep_efficiency_pct" in nightly_summary.columns:
+        suspicious = nightly_summary[~nightly_summary["sleep_efficiency_pct"].isna() &
+                                     ((nightly_summary["sleep_efficiency_pct"] < 0) | (nightly_summary["sleep_efficiency_pct"] > 100))]
+        for _, row in suspicious.iterrows():
+            warnings.append(f"Suspicious sleep_efficiency_pct={row['sleep_efficiency_pct']} on {row['night_date']} for {row['device']}.")
+
+    # - total_sleep_minutes should be 0-1440
+    if "total_sleep_minutes" in nightly_summary.columns:
+        suspicious = nightly_summary[~nightly_summary["total_sleep_minutes"].isna() &
+                                     ((nightly_summary["total_sleep_minutes"] < 0) | (nightly_summary["total_sleep_minutes"] > 1440))]
+        for _, row in suspicious.iterrows():
+            warnings.append(f"Suspicious total_sleep_minutes={row['total_sleep_minutes']} on {row['night_date']} for {row['device']}.")
+
+    # - time_in_bed_minutes should be >= total_sleep_minutes when both are available
+    if "time_in_bed_minutes" in nightly_summary.columns and "total_sleep_minutes" in nightly_summary.columns:
+        suspicious = nightly_summary[~nightly_summary["time_in_bed_minutes"].isna() & ~nightly_summary["total_sleep_minutes"].isna() &
+                                     (nightly_summary["time_in_bed_minutes"] < nightly_summary["total_sleep_minutes"])]
+        for _, row in suspicious.iterrows():
+            warnings.append(f"Suspicious: time_in_bed_minutes={row['time_in_bed_minutes']} < total_sleep_minutes={row['total_sleep_minutes']} on {row['night_date']} for {row['device']}.")
+
+    # - REM + light + deep should approximately equal total_sleep_minutes when sleep stages are available
+    if {"rem_sleep_minutes", "light_sleep_minutes", "deep_sleep_minutes", "total_sleep_minutes"}.issubset(nightly_summary.columns):
+        df = nightly_summary.dropna(subset=["rem_sleep_minutes", "light_sleep_minutes", "deep_sleep_minutes", "total_sleep_minutes"])
+        df = df.assign(sum_stages=df["rem_sleep_minutes"] + df["light_sleep_minutes"] + df["deep_sleep_minutes"])
+        suspicious = df[abs(df["sum_stages"] - df["total_sleep_minutes"]) > 15] # Allowing 15 mins discrepancy
+        for _, row in suspicious.iterrows():
+            warnings.append(f"Suspicious: stage sum={row['sum_stages']} != total_sleep_minutes={row['total_sleep_minutes']} on {row['night_date']} for {row['device']}.")
+
+    return warnings

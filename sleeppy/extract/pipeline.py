@@ -27,12 +27,22 @@ def run_sample_extraction(
     processed_dir: str | Path = "data/processed",
     outputs_dir: str | Path = "outputs",
     include_legacy_raw: bool = True,
+    verbose: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, Path]:
     """Extract observations from sample folders and write normalized outputs."""
 
     raw_samples_path = Path(raw_samples_dir)
     processed_path = Path(processed_dir)
     outputs_path = Path(outputs_dir)
+    project_root = Path.cwd()
+
+    def get_path_string(path: Path) -> str:
+        if verbose:
+            return str(path.absolute())
+        try:
+            return str(path.relative_to(project_root))
+        except ValueError:
+            return str(path)
     observations: list[dict[str, object]] = []
     env = check_ocr_environment()
     report_lines: list[str] = [
@@ -53,12 +63,25 @@ def run_sample_extraction(
         folder.mkdir(parents=True, exist_ok=True)
         files = _supported_files(folder)
         if not files:
-            report_lines.append(f"{folder}: no sample files found.")
+            report_lines.append(f"{get_path_string(folder)}: no sample files found.")
             continue
+        extracted_count = 0
+        total_files = len(files)
+        
         for path in files:
             rows, source_note = _extract_with_details(path, device, parser)
             observations.extend(rows)
-            report_lines.append(f"{path}: extracted {len(rows)} values for {device}; {source_note}")
+            if len(rows) > 0:
+                extracted_count += 1
+            
+            if verbose:
+                report_lines.append(f"{get_path_string(path)}: extracted {len(rows)} values for {device}; {source_note}")
+        
+        if not verbose:
+            if extracted_count == 0:
+                report_lines.append(f"{get_path_string(folder)}: {device} files detected, but no supported metrics were extracted.")
+            else:
+                report_lines.append(f"{get_path_string(folder)}: {device} files detected; {extracted_count} of {total_files} produced values.")
 
     if include_legacy_raw:
         legacy_files = _legacy_raw_files(raw_samples_path.parent)
@@ -67,7 +90,10 @@ def run_sample_extraction(
             parser = _parser_for_device(device)
             rows, source_note = _extract_with_details(path, device, parser)
             observations.extend(rows)
-            report_lines.append(f"{path}: extracted {len(rows)} values for inferred device {device}; {source_note}")
+            if verbose:
+                report_lines.append(f"{get_path_string(path)}: extracted {len(rows)} values for inferred device {device}; {source_note}")
+            else:
+                report_lines.append(f"{get_path_string(path)}: extracted {len(rows)} values for inferred device {device}.")
 
     long_df = ensure_observations_frame(pd.DataFrame(observations, columns=OBSERVATION_COLUMNS))
     return write_extraction_outputs(long_df, processed_path, outputs_path, report_lines)
