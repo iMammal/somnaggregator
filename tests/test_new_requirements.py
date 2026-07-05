@@ -3,10 +3,11 @@ import pytest
 from pathlib import Path
 from sleeppy.quality import check_physiological_sanity
 from sleeppy.extract.pipeline import run_sample_extraction
+from sleeppy.extract.common import infer_date
 
 def test_check_physiological_sanity():
     df = pd.DataFrame([
-        {"night_date": "2026-07-04", "device": "TestDevice", "avg_spo2_pct": 50, "avg_hr_bpm": 20, "min_hr_bpm": 10, "sleep_efficiency_pct": 110, "total_sleep_minutes": 100, "time_in_bed_minutes": 50, "rem_sleep_minutes": 10, "light_sleep_minutes": 10, "deep_sleep_minutes": 10}
+        {"night_date": "2026-07-04", "device": "TestDevice", "avg_spo2_pct": 50, "avg_hr_bpm": 20, "min_hr_bpm": 10, "sleep_efficiency_pct": 110, "total_sleep_minutes": 100, "time_in_bed_minutes": 20, "rem_minutes": 10, "light_minutes": 10, "deep_minutes": 10, "awake_minutes": 10}
     ])
     warnings = check_physiological_sanity(df)
     assert len(warnings) > 0
@@ -14,9 +15,18 @@ def test_check_physiological_sanity():
     assert any("avg_hr_bpm=20" in w for w in warnings)
     assert any("min_hr_bpm=10" in w for w in warnings)
     assert any("sleep_efficiency_pct=110" in w for w in warnings)
-    assert any("total_sleep_minutes=100" in w for w in warnings) # Should not trigger negative check but triggered another check
-    assert any("time_in_bed_minutes=50 < total_sleep_minutes=100" in w for w in warnings)
+    assert any("total_sleep_minutes=100" in w for w in warnings)
+    assert any("time_in_bed_minutes=20 < total_sleep_minutes=100" in w for w in warnings)
     assert any("stage sum=30 != total_sleep_minutes=100" in w for w in warnings)
+    assert any("stage sum=40 != time_in_bed_minutes=20" in w for w in warnings)
+
+def test_date_extraction():
+    # Manual mapping
+    assert infer_date("some text", "Screenshot_20260608-095716_Muse.jpg") == "2026-06-08"
+    
+    # Regex
+    assert infer_date("2026-06-08", "test.jpg") == "2026-06-08"
+    assert infer_date("May 28, 2026", "test.jpg") == "2026-05-28"
 
 def test_relative_path_redaction(tmp_path, monkeypatch):
     # Setup

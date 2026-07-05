@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import re
 import shutil
 import sys
@@ -253,18 +254,48 @@ def parse_duration_to_minutes(text: str) -> int | None:
     return int(round(hours * 60 + minutes + seconds / 60))
 
 
+def load_date_mapping() -> dict[str, str]:
+    mapping = {}
+    csv_path = Path("data/manual_date_mapping.csv")
+    if csv_path.exists():
+        with open(csv_path, encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                mapping[row["filename"]] = row["date"]
+    return mapping
+
+
 def infer_date(text: str, source_file: str | Path) -> str | None:
     """Infer a YYYY-MM-DD date from OCR text or source filename."""
+
+    # Check filename in manual mapping first
+    path = Path(source_file)
+    mapping = load_date_mapping()
+    if path.name in mapping:
+        return mapping[path.name]
 
     patterns = [
         r"\b(?P<year>20\d{2})[-_/\.](?P<month>\d{1,2})[-_/\.](?P<day>\d{1,2})\b",
         r"\b(?P<month>\d{1,2})[-_/\.](?P<day>\d{1,2})[-_/\.](?P<year>20\d{2})\b",
         r"\b(?P<month_name>jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(?P<day>\d{1,2}),?\s+(?P<year>20\d{2})\b",
+        r"\b(?P<month_name>jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(?P<day>\d{1,2})", # Fallback for just Month Day in header
     ]
+    # For Oura "May 28, 2026", "May 28" (assuming current year) or "Today"
+    # Actually, we need year for YYYY-MM-DD. If year is missing, maybe assume 2026 for now as it's the date in description? Or use current year?
+    # Description says: Extract dates from visible app headers when possible, especially Oura “May 28, 2026” / “Today” views.
+    # If "Today" is visible, how to know the date? Maybe it's not possible to infer it unless the file has a timestamp.
+    # The requirement is just: Extract dates ... especially ... and Samsung filenames.
+    
+    # For Oura, "May 28, 2026" should be covered by pattern #3 above.
+    
     for haystack in [text, str(source_file)]:
         for pattern in patterns:
             match = re.search(pattern, haystack, flags=re.IGNORECASE)
             if match:
+                # Handle missing year in pattern 4 if needed
+                if "year" not in match.groupdict() or not match.group("year"):
+                     # Maybe append year?
+                     pass
                 return _date_from_match(match)
 
         compact = re.search(r"(?<!\d)(?P<year>20\d{2})(?P<month>\d{2})(?P<day>\d{2})(?!\d)", haystack)
@@ -559,11 +590,16 @@ def infer_device_from_path(path: Path) -> str:
 def _date_from_match(match: re.Match[str]) -> str | None:
     values = match.groupdict()
     try:
+        year = int(values.get("year") or datetime.now().year)
         if values.get("month_name"):
-            date_text = f"{values['month_name']} {values['day']} {values['year']}"
-            return datetime.strptime(date_text[:3] + date_text[len(values["month_name"]):], "%b %d %Y").date().isoformat()
+            month_str = values["month_name"]
+            # Simplified month name to number conversion if needed, or rely on strptime
+            # datetime.strptime(f"{month_str} {values['day']} {year}", "%B %d %Y")
+            # But the previous implementation used %b.
+            # Let's keep it simple.
+            return datetime.strptime(f"{month_str} {values['day']} {year}", "%B %d %Y").date().isoformat()
         return datetime(
-            int(values["year"]),
+            year,
             int(values["month"]),
             int(values["day"]),
         ).date().isoformat()

@@ -334,11 +334,21 @@ def check_physiological_sanity(nightly_summary: pd.DataFrame) -> list[str]:
             warnings.append(f"Suspicious: time_in_bed_minutes={row['time_in_bed_minutes']} < total_sleep_minutes={row['total_sleep_minutes']} on {row['night_date']} for {row['device']}.")
 
     # - REM + light + deep should approximately equal total_sleep_minutes when sleep stages are available
-    if {"rem_sleep_minutes", "light_sleep_minutes", "deep_sleep_minutes", "total_sleep_minutes"}.issubset(nightly_summary.columns):
-        df = nightly_summary.dropna(subset=["rem_sleep_minutes", "light_sleep_minutes", "deep_sleep_minutes", "total_sleep_minutes"])
-        df = df.assign(sum_stages=df["rem_sleep_minutes"] + df["light_sleep_minutes"] + df["deep_sleep_minutes"])
+    stage_cols = {"rem_minutes", "light_minutes", "deep_minutes"}
+    if stage_cols.issubset(nightly_summary.columns) and "total_sleep_minutes" in nightly_summary.columns:
+        df = nightly_summary.dropna(subset=[*stage_cols, "total_sleep_minutes"])
+        df = df.assign(sum_stages=df["rem_minutes"] + df["light_minutes"] + df["deep_minutes"])
         suspicious = df[abs(df["sum_stages"] - df["total_sleep_minutes"]) > 15] # Allowing 15 mins discrepancy
         for _, row in suspicious.iterrows():
             warnings.append(f"Suspicious: stage sum={row['sum_stages']} != total_sleep_minutes={row['total_sleep_minutes']} on {row['night_date']} for {row['device']}.")
+
+    # - awake + REM + light + deep should approximately equal time_in_bed_minutes
+    stage_cols_bed = {"rem_minutes", "light_minutes", "deep_minutes", "awake_minutes"}
+    if stage_cols_bed.issubset(nightly_summary.columns) and "time_in_bed_minutes" in nightly_summary.columns:
+        df = nightly_summary.dropna(subset=[*stage_cols_bed, "time_in_bed_minutes"])
+        df = df.assign(sum_stages_bed=df["rem_minutes"] + df["light_minutes"] + df["deep_minutes"] + df["awake_minutes"])
+        suspicious = df[abs(df["sum_stages_bed"] - df["time_in_bed_minutes"]) > 15] # Allowing 15 mins discrepancy
+        for _, row in suspicious.iterrows():
+            warnings.append(f"Suspicious: stage sum={row['sum_stages_bed']} != time_in_bed_minutes={row['time_in_bed_minutes']} on {row['night_date']} for {row['device']}.")
 
     return warnings
