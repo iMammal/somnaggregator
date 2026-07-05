@@ -92,7 +92,10 @@ def read_source_text(path: Path) -> SourceText:
     # but here we cache whole file text if possible)
     cache_file = _get_cache_dir() / f"{file_hash}.txt"
     if cache_file.exists():
+        print(f"DEBUG: Cache hit for {path}")
         return SourceText(text=cache_file.read_text(encoding="utf-8"), extraction_method="cache", confidence="high", notes="cached")
+    
+    print(f"DEBUG: Cache miss for {path}")
 
     if suffix == ".pdf":
         text, notes = extract_pdf_text(path)
@@ -560,7 +563,7 @@ def parse_wellness_text(
         ("avg_hrv_ms", ["average\\s+hrv", "avg\\.?\\s*hrv"], "ms", "number"),
         ("max_hrv_ms", ["max(?:imum)?\\s+hrv"], "ms", "number"),
         ("hrv_balance_score", ["hrv\\s+balance"], "score", "number"),
-        ("avg_spo2_pct", ["average\\s+spo2", "avg\\.?\\s*spo2", "average\\s+oxygen", "avg\\.?\\s*oxygen", "oxygen\\s+saturation", "blood\\s+oxygen\\s+average", "\\bspo2"], "pct", "number"),
+        ("avg_spo2_pct", ["average\\s+spo2", "avg\\.?\\s*spo2", "average\\s+oxygen", "avg\\.?\\s*oxygen", "oxygen\\s+saturation", "blood\\s+oxygen(?:\\s*\\W+)?\\s+average", "\\bspo2"], "pct", "number"),
         ("min_spo2_pct", ["lowest\\s+spo2", "min(?:imum)?\\s+spo2", "lowest\\s+oxygen", "min(?:imum)?\\s+oxygen"], "pct", "number"),
         ("respiratory_rate_bpm", ["respiratory\\s+rate", "respiration\\s+rate"], "breaths/min", "number"),
         ("temperature_deviation_c", ["temperature\\s+deviation", "temp\\.?\\s+deviation"], "C", "number"),

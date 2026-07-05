@@ -137,7 +137,7 @@ def run_sample_extraction(
         for path in mixed_files:
             if max_files and processed_files_count >= max_files:
                 break
-            rows = _extract_mixed_files(path)
+            rows = _extract_mixed_files(path, report_lines)
             observations.extend(rows)
             processed_files_count += 1
             report_lines.append(f"{get_path_string(path)}: extracted {len(rows)} values for mixed device(s).")
@@ -146,7 +146,7 @@ def run_sample_extraction(
     return write_extraction_outputs(long_df, processed_path, outputs_path, report_lines)
 
 
-def _extract_mixed_files(path: Path) -> list[dict[str, object]]:
+def _extract_mixed_files(path: Path, report_lines: list[str]) -> list[dict[str, object]]:
     observations = []
     text_pages = extract_pdf_pages_text(path)
     if not any(text.strip() for text in text_pages):
@@ -193,6 +193,9 @@ def _extract_mixed_files(path: Path) -> list[dict[str, object]]:
                 notes=f"Extracted from page {page_num}"
             )
             observations.extend(rows)
+            report_lines.append(f"  Page {page_num}: detected {device}, extracted {len(rows)} values (text length {len(text)})")
+        else:
+            report_lines.append(f"  Page {page_num}: no device detected (text length {len(text)})")
             
     return observations
 

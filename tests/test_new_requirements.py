@@ -134,7 +134,7 @@ def test_mixed_extraction():
     if not files:
         pytest.skip("No mixed files found")
         
-    rows = _extract_mixed_files(files[0])
+    rows = _extract_mixed_files(files[0], [])
     assert True
 
 
