@@ -30,6 +30,30 @@ def _get_cache_dir() -> Path:
 
 SUPPORTED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
+VERBOSE = False
+
+def set_verbose(v: bool):
+    global VERBOSE
+    VERBOSE = v
+
+class CacheStats:
+    def __init__(self):
+        self.hits = 0
+        self.misses = 0
+        self.start_time = datetime.now()
+
+    def hit(self):
+        self.hits += 1
+
+    def miss(self):
+        self.misses += 1
+
+    def report(self):
+        elapsed = datetime.now() - self.start_time
+        print(f"Extraction summary: {self.hits} cache hits, {self.misses} cache misses.")
+        print(f"Elapsed time: {elapsed}")
+
+CACHE_STATS = CacheStats()
 TESSERACT_CANDIDATES = [
     Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe"),
     Path(r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"),
@@ -92,10 +116,14 @@ def read_source_text(path: Path) -> SourceText:
     # but here we cache whole file text if possible)
     cache_file = _get_cache_dir() / f"{file_hash}.txt"
     if cache_file.exists():
-        print(f"DEBUG: Cache hit for {path}")
+        CACHE_STATS.hit()
+        if VERBOSE:
+            print(f"DEBUG: Cache hit for {path}")
         return SourceText(text=cache_file.read_text(encoding="utf-8"), extraction_method="cache", confidence="high", notes="cached")
     
-    print(f"DEBUG: Cache miss for {path}")
+    CACHE_STATS.miss()
+    if VERBOSE:
+        print(f"DEBUG: Cache miss for {path}")
 
     if suffix == ".pdf":
         text, notes = extract_pdf_text(path)
@@ -221,12 +249,32 @@ def extract_pdf_text(path: Path) -> tuple[str, str]:
         return "", f"PyMuPDF failed: {exc}"
 
 
+def get_pdf_page_cache_path(file_hash: str, page_num: int) -> Path:
+    return _get_cache_dir() / f"{file_hash}_page_{page_num}.txt"
+
 def extract_pdf_pages_text(path: Path) -> list[str]:
-    """Extract selectable text from a PDF page-by-page."""
+    """Extract selectable text from a PDF page-by-page, with caching."""
+    file_hash = _get_file_hash(path)
     try:
         import fitz  # type: ignore
         with fitz.open(path) as document:
-            return [page.get_text("text") for page in document]
+            text_pages = []
+            for i, page in enumerate(document):
+                page_num = i + 1
+                cache_path = get_pdf_page_cache_path(file_hash, page_num)
+                if cache_path.exists():
+                    CACHE_STATS.hit()
+                    if VERBOSE:
+                        print(f"DEBUG: PDF page cache hit: {path.name} page {page_num}")
+                    text_pages.append(cache_path.read_text(encoding="utf-8"))
+                else:
+                    CACHE_STATS.miss()
+                    if VERBOSE:
+                        print(f"DEBUG: PDF page cache miss: {path.name} page {page_num}")
+                    text = page.get_text("text")
+                    cache_path.write_text(text, encoding="utf-8")
+                    text_pages.append(text)
+            return text_pages
     except Exception:
         return []
 
@@ -278,28 +326,54 @@ def ocr_pdf_pages(path: Path, dpi: int = 180) -> tuple[str, str]:
 
 
 def ocr_pdf_pages_text(path: Path, dpi: int = 180) -> list[str]:
-    """Render PDF pages with PyMuPDF and OCR them if all optional dependencies exist."""
-
+    """Render PDF pages with PyMuPDF and OCR them if all optional dependencies exist, with caching."""
+    file_hash = _get_file_hash(path)
     try:
         import fitz  # type: ignore
         from PIL import Image
         import pytesseract
-    except ImportError:
-        return []
-
-    ready, _ = configure_pytesseract()
-    if not ready:
-        return []
-
-    try:
-        text_parts = []
+        
         with fitz.open(path) as document:
-            for page in document:
+            text_pages = []
+            for i, page in enumerate(document):
+                page_num = i + 1
+                # Use a specific cache path for OCR text
+                cache_path = get_pdf_page_cache_path(file_hash, page_num)
+                # Need a separate cache path for OCR specifically, maybe _ocr?
+                # Actually, requirement says: "If cached text exists for a PDF page... do not OCR it"
+                # So if `get_pdf_page_cache_path` exists, we can use it.
+                # But wait, `ocr_pdf_pages_text` is ONLY called if `extract_pdf_pages_text` (parsed text) failed to find text.
+                # So we should be able to reuse the same cache key for "PDF text found for this page".
+                # But wait, if I had empty text before, `extract_pdf_pages_text` would have created an empty file in cache.
+                # I need to distinguish between empty parsed text and filled OCR text.
+                
+                # Let's use a different cache key for OCR'ed text: f"{file_hash}_ocr_page_{page_num}.txt"
+                ocr_cache_path = _get_cache_dir() / f"{file_hash}_ocr_page_{page_num}.txt"
+                
+                if ocr_cache_path.exists():
+                    text = ocr_cache_path.read_text(encoding="utf-8")
+                    if text.strip():
+                        CACHE_STATS.hit()
+                        if VERBOSE:
+                            print(f"PDF page OCR cache hit: {path.name} page {page_num}")
+                        text_pages.append(text)
+                        continue
+                    else:
+                        # File exists but is empty, treat as miss and re-OCR
+                        if VERBOSE:
+                            print(f"PDF page OCR cache empty, treating as miss: {path.name} page {page_num}")
+                
+                CACHE_STATS.miss()
+                if VERBOSE:
+                    print(f"PDF page OCR cache miss: {path.name} page {page_num}")
+                
                 pixmap = page.get_pixmap(dpi=dpi)
                 mode = "RGB" if pixmap.alpha == 0 else "RGBA"
                 image = Image.frombytes(mode, [pixmap.width, pixmap.height], pixmap.samples)
-                text_parts.append(pytesseract.image_to_string(image))
-        return text_parts
+                text = pytesseract.image_to_string(image)
+                ocr_cache_path.write_text(text, encoding="utf-8")
+                text_pages.append(text)
+            return text_pages
     except Exception:
         return []
 
@@ -389,7 +463,11 @@ def infer_date(text: str, source_file: str | Path, page: int | None = None) -> s
     
     # For Oura, "May 28, 2026" should be covered by pattern #3 above.
     
-    for haystack in [text, str(source_file)]:
+    haystacks = [text, str(source_file)]
+    if "OSCAR" in str(source_file):
+        haystacks = [str(source_file), text]
+
+    for haystack in haystacks:
         for pattern in patterns:
             match = re.search(pattern, haystack, flags=re.IGNORECASE)
             if match:
@@ -495,20 +573,24 @@ def add_number_observation(
     confidence: str,
     notes: str,
     value_transform: Callable[[float], float] | None = None,
+    flags: int = re.IGNORECASE,
+    value_pattern: str = r"[+-]?\d+(?:\.\d+)?",
 ) -> None:
     """Append a numeric observation if one of the label patterns matches."""
 
     for label_pattern in label_patterns:
         match = re.search(
-            rf"{label_pattern}\s*[:\-]?\s*(?P<value>[+-]?\d+(?:\.\d+)?)",
+            rf"{label_pattern}\s*[:\-]?\s*(?P<value>{value_pattern})",
             text,
-            flags=re.IGNORECASE,
+            flags=flags,
         )
         if match:
             value = float(match.group("value"))
             if value_transform is not None:
                 value = value_transform(value)
             if not _within_metric_bounds(metric, value):
+                if VERBOSE and metric == "avg_spo2_pct":
+                    print(f"DEBUG: Found {metric} match '{match.group('value')}' in {source_file}, but it is out of bounds: {value}")
                 continue
             if value.is_integer():
                 value = int(value)
@@ -526,6 +608,15 @@ def add_number_observation(
                 )
             )
             return
+
+    if VERBOSE and metric == "avg_spo2_pct":
+        print(f"DEBUG: Checking {source_file} for {metric}")
+        print(f"DEBUG: No avg_spo2_pct match found. Text snippet:")
+        # Print a snippet around oxygen/saturation/blood/SpO2/average
+        snippet_keywords = ["oxygen", "saturation", "blood", "spo2", "average"]
+        for line in text.splitlines():
+            if any(k in line.lower() for k in snippet_keywords):
+                print(f"  {line}")
 
 
 def _within_metric_bounds(metric: str, value: float) -> bool:
@@ -590,13 +681,23 @@ def parse_wellness_text(
                 text,
                 metric=metric,
                 unit=unit,
-                label_patterns=patterns,
+                label_patterns=patterns if metric != "avg_spo2_pct" else [
+                    "average.*?spo2", 
+                    "avg.*?spo2", 
+                    "average.*?oxygen", 
+                    "avg.*?oxygen", 
+                    "oxygen.*?saturation", 
+                    "blood.*?oxygen.*?average", 
+                    "\\bspo2"
+                ],
                 date=date,
                 device=device,
                 source_file=source_file,
                 extraction_method=extraction_method,
                 confidence=confidence,
                 notes=notes,
+                flags=re.IGNORECASE | re.DOTALL if metric == "avg_spo2_pct" else re.IGNORECASE,
+                value_pattern=r"\d{2,3}" if metric == "avg_spo2_pct" else r"[+-]?\d+(?:\.\d+)?",
             )
 
     breathing = re.search(

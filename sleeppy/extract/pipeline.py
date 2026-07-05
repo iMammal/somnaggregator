@@ -42,11 +42,25 @@ def run_sample_extraction(
     verbose: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, Path]:
     """Extract observations from sample folders and write normalized outputs."""
+    from .common import set_verbose
+    set_verbose(verbose)
 
     raw_samples_path = Path(raw_samples_dir)
     processed_path = Path(processed_dir)
     outputs_path = Path(outputs_dir)
     project_root = Path.cwd()
+    
+    import time
+    import sys
+    sys.stdout.reconfigure(encoding='utf-8')
+    last_time = time.time()
+    
+    def log_time(phase):
+        nonlocal last_time
+        now = time.time()
+        print(f"DEBUG: {phase} took {now - last_time:.2f}s")
+        last_time = now
+        return now
 
     def get_path_string(path: Path) -> str:
         if verbose:
@@ -69,13 +83,15 @@ def run_sample_extraction(
             f"notes={env['notes']}"
         )
     ]
+    
+    last_time = log_time("Initialization")
 
     processed_files_count = 0
 
     for folder_name, (device, parser) in DEVICE_FOLDERS.items():
         if only_folders and folder_name not in only_folders:
             continue
-
+        
         folder = raw_samples_path / folder_name
         folder.mkdir(parents=True, exist_ok=True)
         files = _supported_files(folder)
@@ -85,6 +101,9 @@ def run_sample_extraction(
         if not files:
             report_lines.append(f"{get_path_string(folder)}: no sample files found.")
             continue
+        
+        last_time = log_time(f"Scanning files in {folder_name}")
+        
         extracted_count = 0
         total_files = len(files)
         
@@ -100,6 +119,8 @@ def run_sample_extraction(
             
             if verbose:
                 report_lines.append(f"{get_path_string(path)}: extracted {len(rows)} values for {device}; {source_note}")
+        
+        last_time = log_time(f"Parsing files in {folder_name}")
         
         if not verbose:
             if extracted_count == 0:
@@ -130,27 +151,41 @@ def run_sample_extraction(
 
     mixed_folder = raw_samples_path / "mixed"
     if mixed_folder.exists():
-        mixed_files = _supported_files(mixed_folder)
-        if only_files:
-            mixed_files = [f for f in mixed_files if f.name in only_files or str(f) in only_files]
+        if not only_folders or "mixed" in only_folders:
+            mixed_files = _supported_files(mixed_folder)
+            if only_files:
+                mixed_files = [f for f in mixed_files if f.name in only_files or str(f) in only_files]
 
-        for path in mixed_files:
-            if max_files and processed_files_count >= max_files:
-                break
-            rows = _extract_mixed_files(path, report_lines)
-            observations.extend(rows)
-            processed_files_count += 1
-            report_lines.append(f"{get_path_string(path)}: extracted {len(rows)} values for mixed device(s).")
+            for path in mixed_files:
+                if max_files and processed_files_count >= max_files:
+                    break
+                print(f"Processing mixed file: {path.name}")
+                rows = _extract_mixed_files(path, report_lines)
+                observations.extend(rows)
+                processed_files_count += 1
+                report_lines.append(f"{get_path_string(path)}: extracted {len(rows)} values for mixed device(s).")
 
     long_df = ensure_observations_frame(pd.DataFrame(observations, columns=OBSERVATION_COLUMNS))
+    
+    from .common import CACHE_STATS
+    CACHE_STATS.report()
+
     return write_extraction_outputs(long_df, processed_path, outputs_path, report_lines)
 
 
 def _extract_mixed_files(path: Path, report_lines: list[str]) -> list[dict[str, object]]:
     observations = []
+    print(f"DEBUG: Extracting mixed file: {path.name}")
+    
+    # Simple profiling
+    import time
+    start_page_time = time.time()
+    
     text_pages = extract_pdf_pages_text(path)
     if not any(text.strip() for text in text_pages):
         text_pages = ocr_pdf_pages_text(path)
+    
+    print(f"DEBUG: PDF page extraction for {path.name} took {time.time() - start_page_time:.2f}s")
     
     mapping = load_date_mapping()
     source_label = source_file_label(path)
