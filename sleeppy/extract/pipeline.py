@@ -36,6 +36,9 @@ def run_sample_extraction(
     processed_dir: str | Path = "data/processed",
     outputs_dir: str | Path = "outputs",
     include_legacy_raw: bool = True,
+    only_folders: list[str] | None = None,
+    only_files: list[str] | None = None,
+    max_files: int | None = None,
     verbose: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, Path]:
     """Extract observations from sample folders and write normalized outputs."""
@@ -67,10 +70,18 @@ def run_sample_extraction(
         )
     ]
 
+    processed_files_count = 0
+
     for folder_name, (device, parser) in DEVICE_FOLDERS.items():
+        if only_folders and folder_name not in only_folders:
+            continue
+
         folder = raw_samples_path / folder_name
         folder.mkdir(parents=True, exist_ok=True)
         files = _supported_files(folder)
+        if only_files:
+            files = [f for f in files if f.name in only_files or str(f) in only_files]
+        
         if not files:
             report_lines.append(f"{get_path_string(folder)}: no sample files found.")
             continue
@@ -78,10 +89,14 @@ def run_sample_extraction(
         total_files = len(files)
         
         for path in files:
+            if max_files and processed_files_count >= max_files:
+                break
+            
             rows, source_note = _extract_with_details(path, device, parser)
             observations.extend(rows)
             if len(rows) > 0:
                 extracted_count += 1
+            processed_files_count += 1
             
             if verbose:
                 report_lines.append(f"{get_path_string(path)}: extracted {len(rows)} values for {device}; {source_note}")
@@ -91,14 +106,23 @@ def run_sample_extraction(
                 report_lines.append(f"{get_path_string(folder)}: {device} files detected, but no supported metrics were extracted.")
             else:
                 report_lines.append(f"{get_path_string(folder)}: {device} files detected; {extracted_count} of {total_files} produced values.")
+        
+        if max_files and processed_files_count >= max_files:
+            break
 
     if include_legacy_raw:
         legacy_files = _legacy_raw_files(raw_samples_path.parent)
+        if only_files:
+            legacy_files = [f for f in legacy_files if f.name in only_files or str(f) in only_files]
+            
         for path in legacy_files:
+            if max_files and processed_files_count >= max_files:
+                break
             device = infer_device_from_path(path)
             parser = _parser_for_device(device)
             rows, source_note = _extract_with_details(path, device, parser)
             observations.extend(rows)
+            processed_files_count += 1
             if verbose:
                 report_lines.append(f"{get_path_string(path)}: extracted {len(rows)} values for inferred device {device}; {source_note}")
             else:
@@ -106,9 +130,16 @@ def run_sample_extraction(
 
     mixed_folder = raw_samples_path / "mixed"
     if mixed_folder.exists():
-        for path in _supported_files(mixed_folder):
+        mixed_files = _supported_files(mixed_folder)
+        if only_files:
+            mixed_files = [f for f in mixed_files if f.name in only_files or str(f) in only_files]
+
+        for path in mixed_files:
+            if max_files and processed_files_count >= max_files:
+                break
             rows = _extract_mixed_files(path)
             observations.extend(rows)
+            processed_files_count += 1
             report_lines.append(f"{get_path_string(path)}: extracted {len(rows)} values for mixed device(s).")
 
     long_df = ensure_observations_frame(pd.DataFrame(observations, columns=OBSERVATION_COLUMNS))

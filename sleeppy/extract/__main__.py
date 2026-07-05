@@ -12,6 +12,10 @@ def main() -> None:
     parser.add_argument("--raw-samples-dir", default="data/raw/samples")
     parser.add_argument("--processed-dir", default="data/processed")
     parser.add_argument("--outputs-dir", default="outputs")
+    parser.add_argument("--only-folder", action="append", help="Only process these subfolders.")
+    parser.add_argument("--only-file", action="append", help="Only process these files.")
+    parser.add_argument("--max-files", type=int, help="Limit number of files to process.")
+    parser.add_argument("--verbose", action="store_true", help="Verbose reporting.")
     parser.add_argument("--no-legacy-raw", action="store_true", help="Do not also scan files directly under data/raw.")
     args = parser.parse_args()
 
@@ -20,6 +24,10 @@ def main() -> None:
         processed_dir=args.processed_dir,
         outputs_dir=args.outputs_dir,
         include_legacy_raw=not args.no_legacy_raw,
+        only_folders=args.only_folder,
+        only_files=args.only_file,
+        max_files=args.max_files,
+        verbose=args.verbose,
     )
     print(f"Wrote {len(summary)} nightly rows and {len(observations)} observations.")
     print(f"Report: {report_path}")

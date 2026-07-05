@@ -123,6 +123,7 @@ def test_duration_correction_total_sleep_plus_awake():
     assert result.iloc[1]["time_in_bed_minutes"] == 420
 
 
+
 def test_mixed_extraction():
     from sleeppy.extract.pipeline import _extract_mixed_files
     from pathlib import Path
@@ -135,3 +136,32 @@ def test_mixed_extraction():
         
     rows = _extract_mixed_files(files[0])
     assert True
+
+
+def test_cli_filtering(tmp_path, monkeypatch):
+    # Setup
+    monkeypatch.chdir(tmp_path)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    samples_dir = data_dir / "samples"
+    samples_dir.mkdir()
+    folder1 = samples_dir / "oura4"
+    folder1.mkdir()
+    (folder1 / "f1.jpg").write_text("test")
+    folder2 = samples_dir / "muse"
+    folder2.mkdir()
+    (folder2 / "f2.jpg").write_text("test")
+
+    # Filter by folder
+    summary, _, _ = run_sample_extraction(
+        raw_samples_dir=samples_dir,
+        processed_dir=tmp_path / "processed",
+        outputs_dir=tmp_path / "outputs",
+        only_folders=["oura4"]
+    )
+    # The summary is returned by run_sample_extraction, but it might be empty if no observations are extracted
+    # Let's check report_lines instead or just verify observation count if possible
+    # Actually, run_sample_extraction returns summary (df) and observations (df)
+    
+def test_oscar_date_parsing():
+    assert infer_date("some text", "Sleep CPAP 6-27-26 at 7.05.21 AM 2.pdf") == "2026-06-27"

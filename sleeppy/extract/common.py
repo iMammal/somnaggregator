@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import re
 import shutil
 import sys
@@ -11,6 +12,21 @@ from datetime import datetime
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Callable
+
+
+def _get_file_hash(path: Path) -> str:
+    """Return a SHA-256 hash of the file."""
+    hasher = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(8192):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _get_cache_dir() -> Path:
+    cache_dir = Path("data/interim/ocr_cache")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
 
 SUPPORTED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
@@ -67,27 +83,42 @@ def source_file_label(path: Path) -> str:
 
 def read_source_text(path: Path) -> SourceText:
     """Extract text from a PDF or image, preferring parsed PDF text before OCR."""
-
+    
+    file_hash = _get_file_hash(path)
+    
     suffix = path.suffix.lower()
+    
+    # Try cache first (simplified cache: assume single-page or cache key includes page if needed, 
+    # but here we cache whole file text if possible)
+    cache_file = _get_cache_dir() / f"{file_hash}.txt"
+    if cache_file.exists():
+        return SourceText(text=cache_file.read_text(encoding="utf-8"), extraction_method="cache", confidence="high", notes="cached")
+
     if suffix == ".pdf":
         text, notes = extract_pdf_text(path)
         if text.strip():
-            return SourceText(text=text, extraction_method="parsed_text", confidence="high", notes=notes)
+            st = SourceText(text=text, extraction_method="parsed_text", confidence="high", notes=notes)
+            cache_file.write_text(st.text, encoding="utf-8")
+            return st
 
         ocr_text, ocr_notes = ocr_pdf_pages(path)
         if ocr_text.strip():
-            return SourceText(
+            st = SourceText(
                 text=ocr_text,
                 extraction_method="ocr",
                 confidence="medium",
                 notes=_join_notes(notes, ocr_notes),
             )
+            cache_file.write_text(st.text, encoding="utf-8")
+            return st
         return SourceText(text="", extraction_method="manual", confidence="low", notes=_join_notes(notes, ocr_notes))
 
     if suffix in IMAGE_EXTENSIONS:
         text, notes = ocr_image(path)
         if text.strip():
-            return SourceText(text=text, extraction_method="ocr", confidence="medium", notes=notes)
+            st = SourceText(text=text, extraction_method="ocr", confidence="medium", notes=notes)
+            cache_file.write_text(st.text, encoding="utf-8")
+            return st
         return SourceText(text="", extraction_method="manual", confidence="low", notes=notes)
 
     return SourceText(text="", extraction_method="manual", confidence="low", notes=f"Unsupported file type: {suffix}")
@@ -359,15 +390,17 @@ def infer_date(text: str, source_file: str | Path, page: int | None = None) -> s
         for pattern in patterns:
             match = re.search(pattern, haystack, flags=re.IGNORECASE)
             if match:
-                # Handle missing year in pattern 4 if needed
-                if "year" not in match.groupdict() or not match.group("year"):
-                     # Maybe append year?
-                     pass
                 return _date_from_match(match)
 
         compact = re.search(r"(?<!\d)(?P<year>20\d{2})(?P<month>\d{2})(?P<day>\d{2})(?!\d)", haystack)
         if compact:
             return _date_from_match(compact)
+        
+        # OSCAR-style 2-digit year (MM-DD-YY)
+        mm_dd_yy = re.search(r"\b(?P<month>\d{1,2})[-_/\.](?P<day>\d{1,2})[-_/\.](?P<year>\d{2})\b", haystack)
+        if mm_dd_yy:
+            return _date_from_match(mm_dd_yy)
+
     return None
 
 
@@ -658,6 +691,8 @@ def _date_from_match(match: re.Match[str]) -> str | None:
     values = match.groupdict()
     try:
         year = int(values.get("year") or datetime.now().year)
+        if year < 100:
+            year += 2000
         if values.get("month_name"):
             month_str = values["month_name"]
             # Simplified month name to number conversion if needed, or rely on strptime
