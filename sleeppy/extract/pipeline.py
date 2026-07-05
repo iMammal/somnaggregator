@@ -223,9 +223,10 @@ def _extract_mixed_files(path: Path, report_lines: list[str]) -> list[dict[str, 
                 text,
                 source_file=f"{source_label} (page {page_num})",
                 device=device,
-                extraction_method="parsed_text" if text else "ocr", # Need to adjust extraction_method
+                extraction_method="parsed_text" if text else "ocr",
                 confidence="medium",
-                notes=f"Extracted from page {page_num}"
+                notes=f"Extracted from page {page_num}",
+                page=page_num,
             )
             observations.extend(rows)
             report_lines.append(f"  Page {page_num}: detected {device}, extracted {len(rows)} values (text length {len(text)})")

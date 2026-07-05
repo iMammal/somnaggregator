@@ -15,6 +15,7 @@ def parse_muse_text(
     extraction_method: str = "parsed_text",
     confidence: str = "high",
     notes: str = "",
+    page: int | None = None,
 ) -> list[dict[str, object]]:
     """Parse Muse sleep summary text."""
 
@@ -25,6 +26,7 @@ def parse_muse_text(
         extraction_method=extraction_method,
         confidence=confidence,
         notes=notes,
+        page=page,
     )
 
 

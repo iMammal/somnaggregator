@@ -422,6 +422,34 @@ def load_date_mapping() -> dict[str, dict[int | None, dict[str, str]]]:
     return mapping
 
 
+def load_metric_overrides() -> dict[str, dict[int | None, dict[str, str]]]:
+    overrides: dict[str, dict[int | None, dict[str, str]]] = {}
+    csv_path = Path("data/manual_metric_overrides.csv")
+    if csv_path.exists():
+        with open(csv_path, encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                path = Path(row["path"]).as_posix()
+                page = int(row.get("page") or 0) if "page" in row else None
+                metric = row["metric"]
+                value = row["value"]
+                
+                if path not in overrides:
+                    overrides[path] = {}
+                if page not in overrides[path]:
+                    overrides[path][page] = {}
+                overrides[path][page][metric] = value
+                
+                # Support basename mapping too
+                basename = Path(row["path"]).name
+                if basename not in overrides:
+                    overrides[basename] = {}
+                if page not in overrides[basename]:
+                    overrides[basename][page] = {}
+                overrides[basename][page][metric] = value
+    return overrides
+
+
 def infer_date(text: str, source_file: str | Path, page: int | None = None) -> str | None:
     """Infer a YYYY-MM-DD date from OCR text or source filename."""
 
@@ -572,11 +600,48 @@ def add_number_observation(
     extraction_method: str,
     confidence: str,
     notes: str,
+    page: int | None = None,
     value_transform: Callable[[float], float] | None = None,
     flags: int = re.IGNORECASE,
     value_pattern: str = r"[+-]?\d+(?:\.\d+)?",
 ) -> None:
     """Append a numeric observation if one of the label patterns matches."""
+
+    # Check for manual overrides
+    overrides = load_metric_overrides()
+    path = Path(source_file)
+    path_posix = path.as_posix()
+    basename = path.name
+    
+    lookup_page = page or 0
+    
+    # Check overrides
+    for key in [path_posix, basename]:
+        if key in overrides and lookup_page in overrides[key] and metric in overrides[key][lookup_page]:
+            value = float(overrides[key][lookup_page][metric])
+            if value_transform is not None:
+                value = value_transform(value)
+            
+            if value.is_integer():
+                value = int(value)
+            rows.append(
+                observation(
+                    date=date,
+                    device=device,
+                    metric=metric,
+                    value=value,
+                    unit=unit,
+                    source_file=source_file,
+                    extraction_method=f"{extraction_method}-override",
+                    confidence="manual",
+                    notes=f"{notes} (manual override)",
+                )
+            )
+            return
+
+    # Debug
+    # print(f"DEBUG: overrides={overrides}")
+    # print(f"DEBUG: key={path_posix} or {basename}, page={page}, metric={metric}")
 
     for label_pattern in label_patterns:
         match = re.search(
@@ -635,10 +700,11 @@ def parse_wellness_text(
     extraction_method: str,
     confidence: str,
     notes: str,
+    page: int | None = None,
 ) -> list[dict[str, object]]:
     """Parse common non-CPAP sleep summary fields from extracted text."""
 
-    date = infer_date(text, source_file)
+    date = infer_date(text, source_file, page=page)
     rows: list[dict[str, object]] = []
     specs = [
         ("total_sleep_minutes", ["(?:total\\s+)?sleep", "sleep\\s+duration", "time\\s+asleep", "asleep"], "minutes", "duration"),
@@ -696,6 +762,7 @@ def parse_wellness_text(
                 extraction_method=extraction_method,
                 confidence=confidence,
                 notes=notes,
+                page=page,
                 flags=re.IGNORECASE | re.DOTALL if metric == "avg_spo2_pct" else re.IGNORECASE,
                 value_pattern=r"\d{2,3}" if metric == "avg_spo2_pct" else r"[+-]?\d+(?:\.\d+)?",
             )
@@ -731,10 +798,11 @@ def parse_cpap_text(
     extraction_method: str,
     confidence: str,
     notes: str,
+    page: int | None = None,
 ) -> list[dict[str, object]]:
     """Parse CPAP summary fields from OSCAR/SleepScope-style text."""
 
-    date = infer_date(text, source_file)
+    date = infer_date(text, source_file, page=page)
     rows: list[dict[str, object]] = []
     add_duration_observation(
         rows,
@@ -770,6 +838,7 @@ def parse_cpap_text(
             extraction_method=extraction_method,
             confidence=confidence,
             notes=notes,
+            page=page,
         )
     return rows
 

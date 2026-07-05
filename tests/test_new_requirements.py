@@ -165,3 +165,31 @@ def test_cli_filtering(tmp_path, monkeypatch):
     
 def test_oscar_date_parsing():
     assert infer_date("some text", "Sleep CPAP 6-27-26 at 7.05.21 AM 2.pdf") == "2026-06-27"
+
+
+def test_metric_overrides(tmp_path, monkeypatch):
+    # Setup
+    monkeypatch.chdir(tmp_path)
+    
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    csv_file = data_dir / "manual_metric_overrides.csv"
+    csv_file.write_text("path,page,device,metric,value,unit,date\ntest_file.jpg,0,TestDevice,avg_spo2_pct,95,pct,2026-07-04")
+    
+    from sleeppy.extract.common import parse_wellness_text
+    
+    text = "Some OCR text"
+    rows = parse_wellness_text(
+        text,
+        device="TestDevice",
+        source_file="test_file.jpg",
+        extraction_method="parsed_text",
+        confidence="high",
+        notes=""
+    )
+    
+    spo2_rows = [r for r in rows if r["metric"] == "avg_spo2_pct"]
+    assert len(spo2_rows) > 0
+    assert spo2_rows[0]["value"] == 95
+    assert "manual override" in str(spo2_rows[0]["notes"])
+    assert spo2_rows[0]["extraction_method"] == "parsed_text-override"
