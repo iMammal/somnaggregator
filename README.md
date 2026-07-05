@@ -23,6 +23,7 @@ data/
       samsung_watch/
       muse/
       oscar/
+      mixed/       # PDFs containing data from multiple devices
   interim/     # Manual-entry CSVs and lightly cleaned extracts
   processed/   # Extracted normalized CSVs and aligned/resampled analysis tables
 notebooks/     # Follow-up notebooks
@@ -52,6 +53,7 @@ sample.ipynb   # Main extraction and analysis notebook
    - `data/raw/samples/samsung_watch/`
    - `data/raw/samples/muse/`
    - `data/raw/samples/oscar/`
+   - `data/raw/samples/mixed/` (For PDFs containing multiple devices)
 
    Real screenshots, PDFs, exports, and reports contain personal health data and should stay out of git. The repository ignores raw data by default and only preserves sample directory placeholders with `.gitkeep`.
 3. Run first-pass extraction:

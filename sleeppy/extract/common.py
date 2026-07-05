@@ -187,6 +187,16 @@ def extract_pdf_text(path: Path) -> tuple[str, str]:
         return "", f"PyMuPDF failed: {exc}"
 
 
+def extract_pdf_pages_text(path: Path) -> list[str]:
+    """Extract selectable text from a PDF page-by-page."""
+    try:
+        import fitz  # type: ignore
+        with fitz.open(path) as document:
+            return [page.get_text("text") for page in document]
+    except Exception:
+        return []
+
+
 def ocr_image(path: Path) -> tuple[str, str]:
     """OCR one image with pytesseract when available."""
 
@@ -233,6 +243,33 @@ def ocr_pdf_pages(path: Path, dpi: int = 180) -> tuple[str, str]:
         return "", f"PDF OCR failed: {exc}"
 
 
+def ocr_pdf_pages_text(path: Path, dpi: int = 180) -> list[str]:
+    """Render PDF pages with PyMuPDF and OCR them if all optional dependencies exist."""
+
+    try:
+        import fitz  # type: ignore
+        from PIL import Image
+        import pytesseract
+    except ImportError:
+        return []
+
+    ready, _ = configure_pytesseract()
+    if not ready:
+        return []
+
+    try:
+        text_parts = []
+        with fitz.open(path) as document:
+            for page in document:
+                pixmap = page.get_pixmap(dpi=dpi)
+                mode = "RGB" if pixmap.alpha == 0 else "RGBA"
+                image = Image.frombytes(mode, [pixmap.width, pixmap.height], pixmap.samples)
+                text_parts.append(pytesseract.image_to_string(image))
+        return text_parts
+    except Exception:
+        return []
+
+
 def parse_duration_to_minutes(text: str) -> int | None:
     """Parse durations such as '6h 52m', '1 hours, 39 minutes, 0 seconds', or '52 min'."""
 
@@ -254,20 +291,30 @@ def parse_duration_to_minutes(text: str) -> int | None:
     return int(round(hours * 60 + minutes + seconds / 60))
 
 
-def load_date_mapping() -> dict[str, str]:
-    mapping = {}
+def load_date_mapping() -> dict[str, dict[int | None, dict[str, str]]]:
+    mapping: dict[str, dict[int | None, dict[str, str]]] = {}
     csv_path = Path("data/manual_date_mapping.csv")
     if csv_path.exists():
         with open(csv_path, encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                path = Path(row["path"])
-                mapping[path.as_posix()] = row["date"]
-                mapping[path.name] = row["date"]
+                path = Path(row["path"]).as_posix()
+                page = int(row.get("page") or 0) if "page" in row else None
+                date = row.get("date")
+                device = row.get("device")
+                
+                if path not in mapping:
+                    mapping[path] = {}
+                mapping[path][page] = {"date": date, "device": device}
+                # Support basename mapping too
+                basename = Path(row["path"]).name
+                if basename not in mapping:
+                    mapping[basename] = {}
+                mapping[basename][page] = {"date": date, "device": device}
     return mapping
 
 
-def infer_date(text: str, source_file: str | Path) -> str | None:
+def infer_date(text: str, source_file: str | Path, page: int | None = None) -> str | None:
     """Infer a YYYY-MM-DD date from OCR text or source filename."""
 
     # Check filename in manual mapping first
@@ -277,14 +324,22 @@ def infer_date(text: str, source_file: str | Path) -> str | None:
     # Try match by exact relative path (normalized to POSIX)
     try:
         rel_path = path.resolve().relative_to(Path.cwd().resolve())
-        if rel_path.as_posix() in mapping:
-            return mapping[rel_path.as_posix()]
+        rel_path_posix = rel_path.as_posix()
+        if rel_path_posix in mapping:
+            if page in mapping[rel_path_posix]:
+                return mapping[rel_path_posix][page]["date"]
+            if 0 in mapping[rel_path_posix]:
+                return mapping[rel_path_posix][0]["date"]
     except ValueError:
         pass
 
     # Fallback to name
-    if path.name in mapping:
-        return mapping[path.name]
+    name = path.name
+    if name in mapping:
+        if page in mapping[name]:
+            return mapping[name][page]["date"]
+        if 0 in mapping[name]:
+            return mapping[name][0]["date"]
 
     patterns = [
         r"\b(?P<year>20\d{2})[-_/\.](?P<month>\d{1,2})[-_/\.](?P<day>\d{1,2})\b",

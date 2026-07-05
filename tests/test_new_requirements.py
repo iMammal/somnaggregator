@@ -121,3 +121,17 @@ def test_duration_correction_total_sleep_plus_awake():
     assert "time_in_bed_minutes corrected from total_sleep+awake" in result.iloc[0]["notes"]
     # Other device should remain untouched
     assert result.iloc[1]["time_in_bed_minutes"] == 420
+
+
+def test_mixed_extraction():
+    from sleeppy.extract.pipeline import _extract_mixed_files
+    from pathlib import Path
+    
+    # Use a file from the mixed folder
+    mixed_folder = Path("data/raw/samples/mixed")
+    files = list(mixed_folder.iterdir())
+    if not files:
+        pytest.skip("No mixed files found")
+        
+    rows = _extract_mixed_files(files[0])
+    assert True

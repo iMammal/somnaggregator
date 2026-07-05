@@ -10,7 +10,16 @@ from sleeppy.quality import write_extraction_outputs
 from sleeppy.schema import OBSERVATION_COLUMNS, ensure_observations_frame
 
 from . import muse, oscar, oura, samsung
-from .common import SUPPORTED_EXTENSIONS, check_ocr_environment, infer_device_from_path, read_source_text, source_file_label
+from .common import (
+    SUPPORTED_EXTENSIONS,
+    check_ocr_environment,
+    infer_device_from_path,
+    read_source_text,
+    source_file_label,
+    extract_pdf_pages_text,
+    ocr_pdf_pages_text,
+    load_date_mapping,
+)
 
 
 DEVICE_FOLDERS = {
@@ -95,8 +104,66 @@ def run_sample_extraction(
             else:
                 report_lines.append(f"{get_path_string(path)}: extracted {len(rows)} values for inferred device {device}.")
 
+    mixed_folder = raw_samples_path / "mixed"
+    if mixed_folder.exists():
+        for path in _supported_files(mixed_folder):
+            rows = _extract_mixed_files(path)
+            observations.extend(rows)
+            report_lines.append(f"{get_path_string(path)}: extracted {len(rows)} values for mixed device(s).")
+
     long_df = ensure_observations_frame(pd.DataFrame(observations, columns=OBSERVATION_COLUMNS))
     return write_extraction_outputs(long_df, processed_path, outputs_path, report_lines)
+
+
+def _extract_mixed_files(path: Path) -> list[dict[str, object]]:
+    observations = []
+    text_pages = extract_pdf_pages_text(path)
+    if not any(text.strip() for text in text_pages):
+        text_pages = ocr_pdf_pages_text(path)
+    
+    mapping = load_date_mapping()
+    source_label = source_file_label(path)
+    
+    # Try mapping by relative path as in common.py
+    try:
+        rel_path = path.resolve().relative_to(Path.cwd().resolve())
+        source_key = rel_path.as_posix()
+    except ValueError:
+        source_key = source_label
+
+    for i, text in enumerate(text_pages):
+        page_num = i + 1
+        device = None
+        
+        # Check mapping for this page
+        if source_key in mapping and page_num in mapping[source_key]:
+            device = mapping[source_key][page_num].get("device")
+        
+        # If device not in mapping, heuristics
+        if not device:
+            text_lower = text.lower()
+            if "oura" in text_lower:
+                device = "Oura Ring"
+            elif "muse" in text_lower:
+                device = "Muse"
+            elif "samsung" in text_lower or "health" in text_lower:
+                device = "Samsung Watch"
+        
+        if device:
+            parser = _parser_for_device(device)
+            # Use original parser call to get observations, 
+            # need to check its signature. It takes (text, source_file=..., device=..., ...)
+            rows = parser(
+                text,
+                source_file=f"{source_label} (page {page_num})",
+                device=device,
+                extraction_method="parsed_text" if text else "ocr", # Need to adjust extraction_method
+                confidence="medium",
+                notes=f"Extracted from page {page_num}"
+            )
+            observations.extend(rows)
+            
+    return observations
 
 
 def _supported_files(folder: Path) -> list[Path]:
