@@ -68,7 +68,7 @@ def observations_to_nightly_summary(observations: pd.DataFrame) -> pd.DataFrame:
         notes=("notes", _combine_notes),
     )
     summary = values.merge(provenance.reset_index(), on=["night_date", "device"], how="left")
-    return normalize_summary_columns(summary).sort_values(["night_date", "device"]).reset_index(drop=True)
+    return derive_duration_semantics(normalize_summary_columns(summary).sort_values(["night_date", "device"]).reset_index(drop=True))
 
 
 def missingness_by_device(nightly_summary: pd.DataFrame) -> pd.DataFrame:
@@ -285,6 +285,46 @@ def _combine_notes(values: pd.Series) -> str:
     notes = [str(value).strip() for value in values.dropna() if str(value).strip()]
     return "; ".join(sorted(set(notes)))
 
+
+def derive_duration_semantics(summary: pd.DataFrame) -> pd.DataFrame:
+    """Derive time_in_bed_minutes from total_sleep_minutes and sleep_efficiency_pct if needed."""
+
+    summary = summary.copy()
+    if "time_in_bed_minutes" not in summary.columns:
+        summary["time_in_bed_minutes"] = pd.NA
+
+    # 1. Derive from efficiency if missing
+    mask = (summary["device"].str.startswith("Oura", na=False)) & \
+           (summary["time_in_bed_minutes"].isna()) & \
+           (summary["total_sleep_minutes"].notna()) & \
+           (summary["sleep_efficiency_pct"].notna())
+
+    summary.loc[mask, "time_in_bed_minutes"] = (
+        summary.loc[mask, "total_sleep_minutes"] / (summary.loc[mask, "sleep_efficiency_pct"] / 100.0)
+    ).round()
+    summary.loc[mask, "notes"] = summary.loc[mask, "notes"].fillna("") + "; time_in_bed_minutes derived from efficiency"
+
+    # 2. Correct if total_sleep + awake implies a larger time_in_bed
+    if "awake_minutes" in summary.columns:
+        mask_awake = (summary["device"].str.startswith("Oura", na=False)) & \
+                     (summary["total_sleep_minutes"].notna()) & \
+                     (summary["awake_minutes"].notna())
+
+        # Work on subset to avoid alignment issues
+        subset = summary.loc[mask_awake, :].copy()
+        subset["total_sleep_minutes"] = pd.to_numeric(subset["total_sleep_minutes"], errors="coerce")
+        subset["awake_minutes"] = pd.to_numeric(subset["awake_minutes"], errors="coerce")
+        subset["time_in_bed_minutes"] = pd.to_numeric(subset["time_in_bed_minutes"], errors="coerce")
+
+        derived_tib = subset["total_sleep_minutes"] + subset["awake_minutes"]
+        mask_correction = derived_tib > subset["time_in_bed_minutes"].fillna(0)
+
+        subset.loc[mask_correction, "time_in_bed_minutes"] = derived_tib[mask_correction]
+        subset.loc[mask_correction, "notes"] = subset.loc[mask_correction, "notes"].fillna("") + "; time_in_bed_minutes corrected from total_sleep+awake"
+
+        summary.loc[mask_awake, :] = subset
+
+    return summary
 
 def check_physiological_sanity(nightly_summary: pd.DataFrame) -> list[str]:
     warnings = []

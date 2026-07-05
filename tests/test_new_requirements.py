@@ -1,9 +1,9 @@
 import pandas as pd
 import pytest
 from pathlib import Path
-from sleeppy.quality import check_physiological_sanity
+from sleeppy.quality import check_physiological_sanity, derive_duration_semantics
 from sleeppy.extract.pipeline import run_sample_extraction
-from sleeppy.extract.common import infer_date
+from sleeppy.extract.common import infer_date, check_ocr_environment, parse_wellness_text
 
 def test_check_physiological_sanity():
     df = pd.DataFrame([
@@ -19,14 +19,36 @@ def test_check_physiological_sanity():
     assert any("time_in_bed_minutes=20 < total_sleep_minutes=100" in w for w in warnings)
     assert any("stage sum=30 != total_sleep_minutes=100" in w for w in warnings)
     assert any("stage sum=40 != time_in_bed_minutes=20" in w for w in warnings)
+def test_spo2_extraction():
+    text = "Average oxygen saturation 94%"
+    rows = parse_wellness_text(text, device="Samsung", source_file="test.jpg", extraction_method="test", confidence="high", notes="")
+    spo2_rows = [r for r in rows if r["metric"] == "avg_spo2_pct"]
+    assert len(spo2_rows) > 0
+    assert spo2_rows[0]["value"] == 94
 
-def test_date_extraction():
-    # Manual mapping
-    assert infer_date("some text", "Screenshot_20260608-095716_Muse.jpg") == "2026-06-08"
+def test_oura_time_in_bed_derivation():
+    df = pd.DataFrame([
+        {"device": "Oura Ring", "total_sleep_minutes": 381, "sleep_efficiency_pct": 89, "notes": "some note"}
+    ])
+    result = derive_duration_semantics(df)
+    assert not result["time_in_bed_minutes"].isna().any()
+    assert result["time_in_bed_minutes"].iloc[0] == 428
+
+def test_check_ocr_environment_no_crash():
+    # Should not raise SystemExit
+    check_ocr_environment()
+
+def test_oura_manual_date_mapping(tmp_path, monkeypatch):
+    # Setup
+    monkeypatch.chdir(tmp_path)
     
-    # Regex
-    assert infer_date("2026-06-08", "test.jpg") == "2026-06-08"
-    assert infer_date("May 28, 2026", "test.jpg") == "2026-05-28"
+    # Create the CSV
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    csv_file = data_dir / "manual_date_mapping.csv"
+    csv_file.write_text("path,date\ntest_file.jpg,2026-07-04")
+    
+    assert infer_date("some text", "test_file.jpg") == "2026-07-04"
 
 def test_relative_path_redaction(tmp_path, monkeypatch):
     # Setup
@@ -70,3 +92,32 @@ def test_optional_cpap_absence(tmp_path):
     
     report_content = report_path.read_text(encoding="utf-8")
     assert "No CPAP metrics detected; CPAP/OSCAR/SleepScope is optional." in report_content
+
+def test_path_normalization_date_mapping(tmp_path, monkeypatch):
+    # Setup
+    monkeypatch.chdir(tmp_path)
+    
+    # Create the CSV
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    csv_file = data_dir / "manual_date_mapping.csv"
+    csv_file.write_text("path,date\ndata/raw/samples/oura4/file.jpeg,2026-07-04")
+    
+    # Test POSIX match
+    assert infer_date("some text", "data/raw/samples/oura4/file.jpeg") == "2026-07-04"
+    # Test Windows match
+    assert infer_date("some text", r"data\raw\samples\oura4\file.jpeg") == "2026-07-04"
+    # Test Basename fallback
+    assert infer_date("some text", "file.jpeg") == "2026-07-04"
+
+def test_duration_correction_total_sleep_plus_awake():
+    df = pd.DataFrame([
+        {"device": "Oura Ring", "total_sleep_minutes": 381, "awake_minutes": 48, "time_in_bed_minutes": 381, "sleep_efficiency_pct": 89, "notes": ""},
+        {"device": "Other Device", "total_sleep_minutes": 400, "awake_minutes": 20, "time_in_bed_minutes": 420, "notes": ""}
+    ])
+    result = derive_duration_semantics(df)
+    # 381 + 48 = 429
+    assert result.iloc[0]["time_in_bed_minutes"] == 429
+    assert "time_in_bed_minutes corrected from total_sleep+awake" in result.iloc[0]["notes"]
+    # Other device should remain untouched
+    assert result.iloc[1]["time_in_bed_minutes"] == 420

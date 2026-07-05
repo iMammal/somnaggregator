@@ -124,7 +124,7 @@ def check_ocr_environment() -> dict[str, object]:
             version = pytesseract.get_tesseract_version()
             status["tesseract_version"] = str(version)
             status["image_ocr_ready"] = True
-        except Exception as exc:  # pragma: no cover - depends on local executable
+        except (Exception, SystemExit) as exc:  # pragma: no cover - depends on local executable
             notes.append(f"Tesseract executable is not usable from this environment: {exc}")
 
     if not status["pymupdf_installed"]:
@@ -261,7 +261,9 @@ def load_date_mapping() -> dict[str, str]:
         with open(csv_path, encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                mapping[row["filename"]] = row["date"]
+                path = Path(row["path"])
+                mapping[path.as_posix()] = row["date"]
+                mapping[path.name] = row["date"]
     return mapping
 
 
@@ -271,6 +273,16 @@ def infer_date(text: str, source_file: str | Path) -> str | None:
     # Check filename in manual mapping first
     path = Path(source_file)
     mapping = load_date_mapping()
+
+    # Try match by exact relative path (normalized to POSIX)
+    try:
+        rel_path = path.resolve().relative_to(Path.cwd().resolve())
+        if rel_path.as_posix() in mapping:
+            return mapping[rel_path.as_posix()]
+    except ValueError:
+        pass
+
+    # Fallback to name
     if path.name in mapping:
         return mapping[path.name]
 
@@ -460,7 +472,7 @@ def parse_wellness_text(
         ("avg_hrv_ms", ["average\\s+hrv", "avg\\.?\\s*hrv"], "ms", "number"),
         ("max_hrv_ms", ["max(?:imum)?\\s+hrv"], "ms", "number"),
         ("hrv_balance_score", ["hrv\\s+balance"], "score", "number"),
-        ("avg_spo2_pct", ["average\\s+spo2", "avg\\.?\\s*spo2", "average\\s+oxygen", "avg\\.?\\s*oxygen", "oxygen\\s+saturation", "\\bspo2"], "pct", "number"),
+        ("avg_spo2_pct", ["average\\s+spo2", "avg\\.?\\s*spo2", "average\\s+oxygen", "avg\\.?\\s*oxygen", "oxygen\\s+saturation", "blood\\s+oxygen\\s+average", "\\bspo2"], "pct", "number"),
         ("min_spo2_pct", ["lowest\\s+spo2", "min(?:imum)?\\s+spo2", "lowest\\s+oxygen", "min(?:imum)?\\s+oxygen"], "pct", "number"),
         ("respiratory_rate_bpm", ["respiratory\\s+rate", "respiration\\s+rate"], "breaths/min", "number"),
         ("temperature_deviation_c", ["temperature\\s+deviation", "temp\\.?\\s+deviation"], "C", "number"),
