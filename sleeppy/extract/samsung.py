@@ -16,6 +16,7 @@ def parse_samsung_text(
     confidence: str = "high",
     notes: str = "",
     page: int | None = None,
+    **kwargs,
 ) -> list[dict[str, object]]:
     """Parse Samsung Health or SleepWatch sleep summary text."""
 

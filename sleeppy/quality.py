@@ -286,12 +286,98 @@ def _combine_notes(values: pd.Series) -> str:
     return "; ".join(sorted(set(notes)))
 
 
+def _append_note(existing: object, note: str) -> str:
+    text = "" if existing is None or pd.isna(existing) else str(existing).strip()
+    if not text:
+        return note
+    if note in text:
+        return text
+    return f"{text}; {note}"
+
+
+def _numeric_value(value: object) -> float | None:
+    if value is None or pd.isna(value):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _store_numeric(row: pd.Series, key: str, value: float, note: str | None = None) -> None:
+    if float(value).is_integer():
+        row[key] = int(value)
+    else:
+        row[key] = round(value, 3)
+    if note:
+        row["notes"] = _append_note(row.get("notes"), note)
+
+
+def _normalize_oura_duration_row(row: pd.Series) -> pd.Series:
+    """Reconcile Oura duration metrics against the strongest available evidence."""
+
+    row = row.copy()
+    total_sleep = _numeric_value(row.get("total_sleep_minutes"))
+    time_in_bed = _numeric_value(row.get("time_in_bed_minutes"))
+    efficiency = _numeric_value(row.get("sleep_efficiency_pct"))
+    awake = _numeric_value(row.get("awake_minutes"))
+    rem = _numeric_value(row.get("rem_minutes"))
+    deep = _numeric_value(row.get("deep_minutes"))
+    light = _numeric_value(row.get("light_minutes"))
+
+    if total_sleep is not None and efficiency is not None and efficiency > 0:
+        candidate_tib = round(total_sleep * 100.0 / efficiency)
+        if time_in_bed is None or abs(time_in_bed - candidate_tib) > 10:
+            _store_numeric(row, "time_in_bed_minutes", candidate_tib, "time_in_bed_minutes corrected from Oura efficiency")
+            time_in_bed = float(candidate_tib)
+
+    if time_in_bed is None and total_sleep is not None and awake is not None:
+        candidate_tib = round(total_sleep + awake)
+        _store_numeric(row, "time_in_bed_minutes", candidate_tib, "time_in_bed_minutes derived from total_sleep+awake")
+        time_in_bed = float(candidate_tib)
+
+    if time_in_bed is not None and awake is not None:
+        candidate_sleep = round(time_in_bed - awake)
+        if candidate_sleep > 0 and (total_sleep is None or abs(total_sleep - candidate_sleep) > 10):
+            _store_numeric(row, "total_sleep_minutes", candidate_sleep, "total_sleep_minutes corrected from time_in_bed-awake")
+            total_sleep = float(candidate_sleep)
+
+    if time_in_bed is not None and total_sleep is not None and awake is None:
+        candidate_awake = round(time_in_bed - total_sleep)
+        if candidate_awake >= 0:
+            _store_numeric(row, "awake_minutes", candidate_awake, "awake_minutes derived from time_in_bed-total_sleep")
+            awake = float(candidate_awake)
+
+    if time_in_bed is not None:
+        candidate_light = None
+        if awake is not None and rem is not None and deep is not None:
+            candidate_light = round(time_in_bed - awake - rem - deep)
+        elif total_sleep is not None and rem is not None and deep is not None:
+            candidate_light = round(total_sleep - rem - deep)
+        if candidate_light is not None and candidate_light >= 0:
+            if light is None or abs(light - candidate_light) > 10:
+                _store_numeric(row, "light_minutes", candidate_light, "light_minutes corrected from Oura duration consistency")
+                light = float(candidate_light)
+
+    total_sleep = _numeric_value(row.get("total_sleep_minutes"))
+    time_in_bed = _numeric_value(row.get("time_in_bed_minutes"))
+    if time_in_bed is not None and total_sleep is not None and time_in_bed > 0:
+        candidate_efficiency = round(total_sleep * 100.0 / time_in_bed)
+        current_efficiency = _numeric_value(row.get("sleep_efficiency_pct"))
+        if current_efficiency is None or abs(current_efficiency - candidate_efficiency) > 2:
+            _store_numeric(row, "sleep_efficiency_pct", candidate_efficiency, "sleep_efficiency_pct derived from total_sleep/time_in_bed")
+
+    return row
+
+
 def derive_duration_semantics(summary: pd.DataFrame) -> pd.DataFrame:
     """Derive time_in_bed_minutes from total_sleep_minutes and sleep_efficiency_pct if needed."""
 
     summary = summary.copy()
     if "time_in_bed_minutes" not in summary.columns:
         summary["time_in_bed_minutes"] = pd.NA
+    if "notes" not in summary.columns:
+        summary["notes"] = pd.NA
 
     # 1. Derive from efficiency if missing
     mask = (summary["device"].str.startswith("Oura", na=False)) & \
@@ -323,6 +409,11 @@ def derive_duration_semantics(summary: pd.DataFrame) -> pd.DataFrame:
         subset.loc[mask_correction, "notes"] = subset.loc[mask_correction, "notes"].fillna("") + "; time_in_bed_minutes corrected from total_sleep+awake"
 
         summary.loc[mask_awake, :] = subset
+
+    if "device" in summary.columns:
+        oura_mask = summary["device"].astype(str).str.startswith("Oura", na=False)
+        if oura_mask.any():
+            summary.loc[oura_mask] = summary.loc[oura_mask].apply(_normalize_oura_duration_row, axis=1)
 
     return summary
 
@@ -390,5 +481,21 @@ def check_physiological_sanity(nightly_summary: pd.DataFrame) -> list[str]:
         suspicious = df[abs(df["sum_stages_bed"] - df["time_in_bed_minutes"]) > 15] # Allowing 15 mins discrepancy
         for _, row in suspicious.iterrows():
             warnings.append(f"Suspicious: stage sum={row['sum_stages_bed']} != time_in_bed_minutes={row['time_in_bed_minutes']} on {row['night_date']} for {row['device']}.")
+
+    # - Oura specific: total_sleep_minutes + awake_minutes should approximately equal time_in_bed_minutes
+    # - Oura specific: sleep_efficiency_pct should approximately equal total_sleep_minutes / time_in_bed_minutes * 100
+    oura_mask = nightly_summary["device"].str.startswith("Oura", na=False)
+    oura_summary = nightly_summary[oura_mask].dropna(subset=["total_sleep_minutes", "time_in_bed_minutes"])
+    for _, row in oura_summary.iterrows():
+        # Check: total_sleep + awake approx time_in_bed
+        if "awake_minutes" in row and pd.notna(row["awake_minutes"]):
+            if abs((row["total_sleep_minutes"] + row["awake_minutes"]) - row["time_in_bed_minutes"]) > 30:
+                warnings.append(f"Suspicious Oura duration: total_sleep={row['total_sleep_minutes']} + awake={row['awake_minutes']} != time_in_bed={row['time_in_bed_minutes']} on {row['night_date']}.")
+        
+        # Check: efficiency approx total_sleep / time_in_bed * 100
+        if "sleep_efficiency_pct" in row and pd.notna(row["sleep_efficiency_pct"]) and row["time_in_bed_minutes"] > 0:
+            expected_eff = (row["total_sleep_minutes"] / row["time_in_bed_minutes"]) * 100
+            if abs(row["sleep_efficiency_pct"] - expected_eff) > 5:
+                warnings.append(f"Suspicious Oura efficiency: {row['sleep_efficiency_pct']}% != {row['total_sleep_minutes']}/{row['time_in_bed_minutes']}={expected_eff:.1f}% on {row['night_date']}.")
 
     return warnings

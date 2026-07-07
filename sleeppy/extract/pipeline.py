@@ -52,7 +52,11 @@ def run_sample_extraction(
     
     import time
     import sys
-    sys.stdout.reconfigure(encoding='utf-8')
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     last_time = time.time()
     
     def log_time(phase):

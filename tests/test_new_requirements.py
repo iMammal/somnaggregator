@@ -1,9 +1,10 @@
 import pandas as pd
 import pytest
 from pathlib import Path
-from sleeppy.quality import check_physiological_sanity, derive_duration_semantics
+from sleeppy.quality import check_physiological_sanity, derive_duration_semantics, observations_to_nightly_summary
 from sleeppy.extract.pipeline import run_sample_extraction
-from sleeppy.extract.common import infer_date, check_ocr_environment, parse_wellness_text
+from sleeppy.extract.common import infer_date, check_ocr_environment, parse_wellness_text, read_source_text
+from sleeppy.extract.oura import parse_oura_text
 
 def test_check_physiological_sanity():
     df = pd.DataFrame([
@@ -33,6 +34,39 @@ def test_oura_time_in_bed_derivation():
     result = derive_duration_semantics(df)
     assert not result["time_in_bed_minutes"].isna().any()
     assert result["time_in_bed_minutes"].iloc[0] == 428
+
+def test_oura_duration_consistency_warning():
+    from sleeppy.quality import check_physiological_sanity
+    df = pd.DataFrame([
+        {"night_date": "2026-07-06", "device": "Oura Ring", "total_sleep_minutes": 399, "time_in_bed_minutes": 399, "sleep_efficiency_pct": 89, "awake_minutes": 48}
+    ])
+    warnings = check_physiological_sanity(df)
+    assert any("Suspicious Oura efficiency" in w for w in warnings)
+
+def test_oura_sleep_score_zero_requires_explicit_zero():
+    ambiguous_text = "Sleep Score+0 Sleep Score 73"
+    ambiguous_rows = parse_wellness_text(
+        ambiguous_text,
+        device="Oura Ring",
+        source_file="test.jpg",
+        extraction_method="test",
+        confidence="high",
+        notes="",
+    )
+    assert not any(row["metric"] == "sleep_score" for row in ambiguous_rows)
+
+    explicit_text = "Sleep score: 0"
+    explicit_rows = parse_wellness_text(
+        explicit_text,
+        device="Oura Ring",
+        source_file="test.jpg",
+        extraction_method="test",
+        confidence="high",
+        notes="",
+    )
+    score_rows = [r for r in explicit_rows if r["metric"] == "sleep_score"]
+    assert len(score_rows) == 1
+    assert score_rows[0]["value"] == 0
 
 def test_check_ocr_environment_no_crash():
     # Should not raise SystemExit
@@ -123,6 +157,45 @@ def test_duration_correction_total_sleep_plus_awake():
     assert result.iloc[1]["time_in_bed_minutes"] == 420
 
 
+def test_oura_combined_pdf_time_in_bed_regression():
+    path = Path("data/raw/samples/oura3/IMG_0803 Oura3 Combined 20260706.pdf")
+    source = read_source_text(path)
+    rows = parse_oura_text(
+        source.text,
+        source_file=str(path),
+        device="Oura Ring 3 toe",
+        extraction_method=source.extraction_method,
+        confidence=source.confidence,
+        notes=source.notes,
+    )
+    summary = observations_to_nightly_summary(pd.DataFrame(rows))
+    row = summary.iloc[0]
+    assert row["total_sleep_minutes"] == 399
+    assert row["time_in_bed_minutes"] == 448
+    assert row["awake_minutes"] == 49
+    assert row["sleep_efficiency_pct"] == 89
+
+
+def test_oura_light_duration_regression():
+    path = Path("data/raw/samples/oura4/IMG_1042.PNG")
+    source = read_source_text(path)
+    rows = parse_oura_text(
+        source.text,
+        source_file=str(path),
+        device="Oura Ring 4 finger",
+        extraction_method=source.extraction_method,
+        confidence=source.confidence,
+        notes=source.notes,
+    )
+    summary = observations_to_nightly_summary(pd.DataFrame(rows))
+    row = summary.iloc[0]
+    assert row["time_in_bed_minutes"] == 506
+    assert row["total_sleep_minutes"] == 412
+    assert row["awake_minutes"] == 94
+    assert row["light_minutes"] == 309
+    assert row["sleep_efficiency_pct"] == 81
+
+
 
 def test_mixed_extraction():
     from sleeppy.extract.pipeline import _extract_mixed_files
@@ -193,3 +266,53 @@ def test_metric_overrides(tmp_path, monkeypatch):
     assert spo2_rows[0]["value"] == 95
     assert "manual override" in str(spo2_rows[0]["notes"])
     assert spo2_rows[0]["extraction_method"] == "parsed_text-override"
+
+def test_mixed_extraction_parser_kwargs(tmp_path):
+    from sleeppy.extract.pipeline import _extract_mixed_files
+    from pathlib import Path
+    
+    # This just needs to call the parser without crashing
+    # We'll mock the parser
+    
+    # Actually, the task is that `_extract_mixed_files` already calls it
+    # We can just verify it doesn't crash on a real parser with page argument
+    
+    from sleeppy.extract.samsung import parse_samsung_text
+    
+    # Call with page argument
+    try:
+        parse_samsung_text("text", source_file="file.jpg", page=1)
+    except TypeError as e:
+        pytest.fail(f"parse_samsung_text raised TypeError: {e}")
+
+def test_stdout_reconfigure_compatibility():
+    import sys
+    from unittest.mock import MagicMock
+    from sleeppy.extract.pipeline import run_sample_extraction
+    from pathlib import Path
+
+    # Mock sys.stdout without reconfigure
+    original_stdout = sys.stdout
+    try:
+        # Create a mock that has write but no reconfigure
+        mock_stdout = MagicMock()
+        if hasattr(mock_stdout, "reconfigure"):
+            delattr(mock_stdout, "reconfigure")
+        sys.stdout = mock_stdout
+        
+        # Trigger the code path
+        try:
+            run_sample_extraction(
+                raw_samples_dir=Path("non_existent_dir"),
+                processed_dir=Path("non_existent_dir"),
+                outputs_dir=Path("non_existent_dir")
+            )
+        except (FileNotFoundError, OSError):
+            # Expected because dirs don't exist
+            pass
+        except Exception as e:
+            # Should not fail with AttributeError or similar due to missing reconfigure
+            pytest.fail(f"run_sample_extraction failed due to: {e}")
+            
+    finally:
+        sys.stdout = original_stdout

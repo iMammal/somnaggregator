@@ -50,3 +50,8 @@ def test_parse_mask_time_hms():
     )
     assert _metric_value(rows, "cpap_usage_hours") == 1.65
     assert parse_duration_to_minutes("1 hours, 39 minutes, 0 seconds") == 99
+
+
+def test_parse_duration_compact_oura_forms():
+    assert parse_duration_to_minutes("5h09m") == 309
+    assert parse_duration_to_minutes("5h 9m") == 309

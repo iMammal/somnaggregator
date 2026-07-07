@@ -16,6 +16,7 @@ def parse_oscar_text(
     confidence: str = "high",
     notes: str = "",
     page: int | None = None,
+    **kwargs,
 ) -> list[dict[str, object]]:
     """Parse OSCAR/SleepScope CPAP summary text."""
 

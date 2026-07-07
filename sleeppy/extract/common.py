@@ -382,6 +382,8 @@ def parse_duration_to_minutes(text: str) -> int | None:
     """Parse durations such as '6h 52m', '1 hours, 39 minutes, 0 seconds', or '52 min'."""
 
     value = text.strip().lower()
+    value = re.sub(r"\boh", "0h", value)
+    value = re.sub(r"\bo(?=\d)", "0", value)
     hms = re.search(
         r"(?:(?P<hours>\d+(?:\.\d+)?)\s*(?:hours?|hrs?|h))?\s*,?\s*"
         r"(?:(?P<minutes>\d+(?:\.\d+)?)\s*(?:minutes?|mins?|m))?\s*,?\s*"
@@ -557,9 +559,10 @@ def add_duration_observation(
 ) -> None:
     """Append a duration observation if one of the label patterns matches."""
 
+    duration_number = r"(?:[oO]?\d+(?:\.\d+)?)"
     for label_pattern in label_patterns:
         match = re.search(
-            rf"{label_pattern}\s*[:\-]?\s*(?P<duration>\d+(?:\.\d+)?\s*(?:hours?|hrs?|h)(?:\s*,?\s*\d+(?:\.\d+)?\s*(?:minutes?|mins?|m))?(?:\s*,?\s*\d+(?:\.\d+)?\s*(?:seconds?|secs?|s))?|\d+(?:\.\d+)?\s*(?:minutes?|mins?|m))",
+            rf"{label_pattern}\s*[:\-]?\s*(?P<duration>{duration_number}\s*(?:hours?|hrs?|h)(?:\s*,?\s*{duration_number}\s*(?:minutes?|mins?|m))?(?:\s*,?\s*{duration_number}\s*(?:seconds?|secs?|s))?|{duration_number}\s*(?:minutes?|mins?|m))",
             text,
             flags=re.IGNORECASE,
         )
@@ -657,6 +660,9 @@ def add_number_observation(
                 if VERBOSE and metric == "avg_spo2_pct":
                     print(f"DEBUG: Found {metric} match '{match.group('value')}' in {source_file}, but it is out of bounds: {value}")
                 continue
+            if metric == "sleep_score" and value == 0 and not _contains_explicit_zero_sleep_score(text):
+                continue
+
             if value.is_integer():
                 value = int(value)
             rows.append(
@@ -884,3 +890,9 @@ def _date_from_match(match: re.Match[str]) -> str | None:
 
 def _join_notes(*parts: str) -> str:
     return "; ".join(part for part in parts if part)
+
+
+def _contains_explicit_zero_sleep_score(text: str) -> bool:
+    """Return True when the OCR text clearly shows a zero sleep score."""
+
+    return bool(re.search(r"\bsleep\s+score\b\s*[:\-]?\s*0\b", text, flags=re.IGNORECASE))
