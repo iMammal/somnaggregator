@@ -376,8 +376,11 @@ def derive_duration_semantics(summary: pd.DataFrame) -> pd.DataFrame:
     summary = summary.copy()
     if "time_in_bed_minutes" not in summary.columns:
         summary["time_in_bed_minutes"] = pd.NA
+    summary["time_in_bed_minutes"] = pd.to_numeric(summary["time_in_bed_minutes"], errors="coerce")
+    
     if "notes" not in summary.columns:
         summary["notes"] = pd.NA
+    summary["notes"] = summary["notes"].astype("string")
 
     # 1. Derive from efficiency if missing
     mask = (summary["device"].str.startswith("Oura", na=False)) & \
@@ -410,13 +413,15 @@ def derive_duration_semantics(summary: pd.DataFrame) -> pd.DataFrame:
         if mask_awake.any():
             subset.loc[mask_correction, "time_in_bed_minutes"] = derived_tib[mask_correction]
             subset.loc[mask_correction, "notes"] = subset.loc[mask_correction, "notes"].fillna("") + "; time_in_bed_minutes corrected from total_sleep+awake"
-
-            summary.loc[mask_awake, :] = subset
+            
+            summary.loc[mask_awake, "time_in_bed_minutes"] = subset["time_in_bed_minutes"]
+            summary.loc[mask_awake, "notes"] = subset["notes"]
 
     if "device" in summary.columns:
         oura_mask = summary["device"].astype(str).str.startswith("Oura", na=False)
         if oura_mask.any():
-            summary.loc[oura_mask] = summary.loc[oura_mask].apply(_normalize_oura_duration_row, axis=1)
+            updated_subset = summary.loc[oura_mask].apply(_normalize_oura_duration_row, axis=1)
+            summary.update(updated_subset)
 
     return summary
 

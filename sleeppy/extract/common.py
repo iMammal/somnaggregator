@@ -127,22 +127,23 @@ def read_source_text(path: Path) -> SourceText:
 
     if suffix == ".pdf":
         text, notes = extract_pdf_text(path)
+        # Even if empty, cache the result to avoid re-parsing
+        st = SourceText(text=text, extraction_method="parsed_text", confidence="high", notes=notes)
+        cache_file.write_text(st.text, encoding="utf-8")
+        
         if text.strip():
-            st = SourceText(text=text, extraction_method="parsed_text", confidence="high", notes=notes)
-            cache_file.write_text(st.text, encoding="utf-8")
             return st
 
         ocr_text, ocr_notes = ocr_pdf_pages(path)
-        if ocr_text.strip():
-            st = SourceText(
-                text=ocr_text,
-                extraction_method="ocr",
-                confidence="medium",
-                notes=_join_notes(notes, ocr_notes),
-            )
-            cache_file.write_text(st.text, encoding="utf-8")
-            return st
-        return SourceText(text="", extraction_method="manual", confidence="low", notes=_join_notes(notes, ocr_notes))
+        # Always cache OCR results too, even if empty
+        st_ocr = SourceText(
+            text=ocr_text,
+            extraction_method="ocr",
+            confidence="medium",
+            notes=_join_notes(notes, ocr_notes),
+        )
+        cache_file.write_text(st_ocr.text, encoding="utf-8")
+        return st_ocr
 
     if suffix in IMAGE_EXTENSIONS:
         text, notes = ocr_image(path)
@@ -265,12 +266,15 @@ def extract_pdf_pages_text(path: Path) -> list[str]:
                 if cache_path.exists():
                     CACHE_STATS.hit()
                     if VERBOSE:
-                        print(f"DEBUG: PDF page cache hit: {path.name} page {page_num}")
+                        print(f"PDF page cache hit: {path.name} page {page_num}")
                     text_pages.append(cache_path.read_text(encoding="utf-8"))
                 else:
                     CACHE_STATS.miss()
                     if VERBOSE:
-                        print(f"DEBUG: PDF page cache miss: {path.name} page {page_num}")
+                        print(f"PDF page cache miss: {path.name} page {page_num}")
+                        print(f"  File path: {path}")
+                        print(f"  File hash: {file_hash}")
+                        print(f"  Cache path expected: {cache_path}")
                     text = page.get_text("text")
                     cache_path.write_text(text, encoding="utf-8")
                     text_pages.append(text)
@@ -300,29 +304,16 @@ def ocr_image(path: Path) -> tuple[str, str]:
 
 def ocr_pdf_pages(path: Path, dpi: int = 180) -> tuple[str, str]:
     """Render PDF pages with PyMuPDF and OCR them if all optional dependencies exist."""
-
-    try:
-        import fitz  # type: ignore
-        from PIL import Image
-        import pytesseract
-    except ImportError:
-        return "", "PyMuPDF, Pillow, or pytesseract is not installed; PDF OCR skipped."
-
+    
+    text_pages = ocr_pdf_pages_text(path, dpi=dpi)
+    
+    # We need to maintain the same return type (tuple[str, str])
+    # The original implementation returned the joined text and a note.
+    # The note was "Rendered PDF pages with PyMuPDF and OCRed with pytesseract. {note}"
+    
     ready, note = configure_pytesseract()
-    if not ready:
-        return "", note
-
-    try:
-        text_parts = []
-        with fitz.open(path) as document:
-            for page in document:
-                pixmap = page.get_pixmap(dpi=dpi)
-                mode = "RGB" if pixmap.alpha == 0 else "RGBA"
-                image = Image.frombytes(mode, [pixmap.width, pixmap.height], pixmap.samples)
-                text_parts.append(pytesseract.image_to_string(image))
-        return "\n".join(text_parts), f"Rendered PDF pages with PyMuPDF and OCRed with pytesseract. {note}"
-    except Exception as exc:  # pragma: no cover - depends on external files
-        return "", f"PDF OCR failed: {exc}"
+    
+    return "\n".join(text_pages), f"Rendered PDF pages with PyMuPDF and OCRed with pytesseract. {note}"
 
 
 def ocr_pdf_pages_text(path: Path, dpi: int = 180) -> list[str]:
@@ -338,41 +329,28 @@ def ocr_pdf_pages_text(path: Path, dpi: int = 180) -> list[str]:
             for i, page in enumerate(document):
                 page_num = i + 1
                 # Use a specific cache path for OCR text
-                cache_path = get_pdf_page_cache_path(file_hash, page_num)
-                # Need a separate cache path for OCR specifically, maybe _ocr?
-                # Actually, requirement says: "If cached text exists for a PDF page... do not OCR it"
-                # So if `get_pdf_page_cache_path` exists, we can use it.
-                # But wait, `ocr_pdf_pages_text` is ONLY called if `extract_pdf_pages_text` (parsed text) failed to find text.
-                # So we should be able to reuse the same cache key for "PDF text found for this page".
-                # But wait, if I had empty text before, `extract_pdf_pages_text` would have created an empty file in cache.
-                # I need to distinguish between empty parsed text and filled OCR text.
-                
-                # Let's use a different cache key for OCR'ed text: f"{file_hash}_ocr_page_{page_num}.txt"
                 ocr_cache_path = _get_cache_dir() / f"{file_hash}_ocr_page_{page_num}.txt"
                 
                 if ocr_cache_path.exists():
                     text = ocr_cache_path.read_text(encoding="utf-8")
-                    if text.strip():
-                        CACHE_STATS.hit()
-                        if VERBOSE:
-                            print(f"PDF page OCR cache hit: {path.name} page {page_num}")
-                        text_pages.append(text)
-                        continue
-                    else:
-                        # File exists but is empty, treat as miss and re-OCR
-                        if VERBOSE:
-                            print(f"PDF page OCR cache empty, treating as miss: {path.name} page {page_num}")
-                
-                CACHE_STATS.miss()
-                if VERBOSE:
-                    print(f"PDF page OCR cache miss: {path.name} page {page_num}")
-                
-                pixmap = page.get_pixmap(dpi=dpi)
-                mode = "RGB" if pixmap.alpha == 0 else "RGBA"
-                image = Image.frombytes(mode, [pixmap.width, pixmap.height], pixmap.samples)
-                text = pytesseract.image_to_string(image)
-                ocr_cache_path.write_text(text, encoding="utf-8")
-                text_pages.append(text)
+                    CACHE_STATS.hit()
+                    if VERBOSE:
+                        print(f"PDF page OCR cache hit: {path.name} page {page_num}")
+                    text_pages.append(text)
+                else:
+                    CACHE_STATS.miss()
+                    if VERBOSE:
+                        print(f"PDF page OCR cache miss: {path.name} page {page_num}")
+                        print(f"  File path: {path}")
+                        print(f"  File hash: {file_hash}")
+                        print(f"  Cache path expected: {ocr_cache_path}")
+                    
+                    pixmap = page.get_pixmap(dpi=dpi)
+                    mode = "RGB" if pixmap.alpha == 0 else "RGBA"
+                    image = Image.frombytes(mode, [pixmap.width, pixmap.height], pixmap.samples)
+                    text = pytesseract.image_to_string(image)
+                    ocr_cache_path.write_text(text, encoding="utf-8")
+                    text_pages.append(text)
             return text_pages
     except Exception:
         return []
