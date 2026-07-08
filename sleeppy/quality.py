@@ -385,10 +385,11 @@ def derive_duration_semantics(summary: pd.DataFrame) -> pd.DataFrame:
            (summary["total_sleep_minutes"].notna()) & \
            (summary["sleep_efficiency_pct"].notna())
 
-    summary.loc[mask, "time_in_bed_minutes"] = (
-        summary.loc[mask, "total_sleep_minutes"] / (summary.loc[mask, "sleep_efficiency_pct"] / 100.0)
-    ).round()
-    summary.loc[mask, "notes"] = summary.loc[mask, "notes"].fillna("") + "; time_in_bed_minutes derived from efficiency"
+    if mask.any():
+        summary.loc[mask, "time_in_bed_minutes"] = (
+            summary.loc[mask, "total_sleep_minutes"] / (summary.loc[mask, "sleep_efficiency_pct"] / 100.0)
+        ).round()
+        summary.loc[mask, "notes"] = summary.loc[mask, "notes"].fillna("") + "; time_in_bed_minutes derived from efficiency"
 
     # 2. Correct if total_sleep + awake implies a larger time_in_bed
     if "awake_minutes" in summary.columns:
@@ -403,12 +404,14 @@ def derive_duration_semantics(summary: pd.DataFrame) -> pd.DataFrame:
         subset["time_in_bed_minutes"] = pd.to_numeric(subset["time_in_bed_minutes"], errors="coerce")
 
         derived_tib = subset["total_sleep_minutes"] + subset["awake_minutes"]
-        mask_correction = derived_tib > subset["time_in_bed_minutes"].fillna(0)
+        current_tib = subset["time_in_bed_minutes"]
+        mask_correction = current_tib.isna() | (derived_tib > current_tib) | ((derived_tib - current_tib).abs() <= 1)
 
-        subset.loc[mask_correction, "time_in_bed_minutes"] = derived_tib[mask_correction]
-        subset.loc[mask_correction, "notes"] = subset.loc[mask_correction, "notes"].fillna("") + "; time_in_bed_minutes corrected from total_sleep+awake"
+        if mask_awake.any():
+            subset.loc[mask_correction, "time_in_bed_minutes"] = derived_tib[mask_correction]
+            subset.loc[mask_correction, "notes"] = subset.loc[mask_correction, "notes"].fillna("") + "; time_in_bed_minutes corrected from total_sleep+awake"
 
-        summary.loc[mask_awake, :] = subset
+            summary.loc[mask_awake, :] = subset
 
     if "device" in summary.columns:
         oura_mask = summary["device"].astype(str).str.startswith("Oura", na=False)
@@ -489,7 +492,7 @@ def check_physiological_sanity(nightly_summary: pd.DataFrame) -> list[str]:
     for _, row in oura_summary.iterrows():
         # Check: total_sleep + awake approx time_in_bed
         if "awake_minutes" in row and pd.notna(row["awake_minutes"]):
-            if abs((row["total_sleep_minutes"] + row["awake_minutes"]) - row["time_in_bed_minutes"]) > 30:
+            if abs((row["total_sleep_minutes"] + row["awake_minutes"]) - row["time_in_bed_minutes"]) > 5:
                 warnings.append(f"Suspicious Oura duration: total_sleep={row['total_sleep_minutes']} + awake={row['awake_minutes']} != time_in_bed={row['time_in_bed_minutes']} on {row['night_date']}.")
         
         # Check: efficiency approx total_sleep / time_in_bed * 100

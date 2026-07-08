@@ -68,6 +68,9 @@ def test_oura_sleep_score_zero_requires_explicit_zero():
     assert len(score_rows) == 1
     assert score_rows[0]["value"] == 0
 
+def test_infer_date_falls_back_to_filename_after_invalid_text_date():
+    assert infer_date("2026-13-99", "data/raw/samples/oura4/IMG_1062 Combined 20260707.pdf") == "2026-07-07"
+
 def test_check_ocr_environment_no_crash():
     # Should not raise SystemExit
     check_ocr_environment()
@@ -176,6 +179,32 @@ def test_oura_combined_pdf_time_in_bed_regression():
     assert row["sleep_efficiency_pct"] == 89
 
 
+def test_oura4_combined_pdf_attention_layout_regression():
+    path = Path("data/raw/samples/oura4/IMG_1062 Combined 20260707.pdf")
+    source = read_source_text(path)
+    rows = parse_oura_text(
+        source.text,
+        source_file=str(path),
+        device="Oura Ring 4 finger",
+        extraction_method=source.extraction_method,
+        confidence=source.confidence,
+        notes=source.notes,
+    )
+    summary = observations_to_nightly_summary(pd.DataFrame(rows))
+    row = summary.iloc[0]
+    assert str(row["night_date"]) == "2026-07-07"
+    assert row["sleep_score"] == 51
+    assert row["total_sleep_minutes"] == 237
+    assert row["time_in_bed_minutes"] == 299
+    assert row["awake_minutes"] == 62
+    assert row["rem_minutes"] == 39
+    assert row["light_minutes"] == 183
+    assert row["deep_minutes"] == 15
+    assert row["sleep_efficiency_pct"] == 79
+    assert row["min_hr_bpm"] == 52
+    assert row["avg_hrv_ms"] == 25
+
+
 def test_oura_light_duration_regression():
     path = Path("data/raw/samples/oura4/IMG_1042.PNG")
     source = read_source_text(path)
@@ -194,6 +223,95 @@ def test_oura_light_duration_regression():
     assert row["awake_minutes"] == 94
     assert row["light_minutes"] == 309
     assert row["sleep_efficiency_pct"] == 81
+
+
+def test_samsung_july7_stage_and_vitals_regression():
+    from sleeppy.extract.samsung import diagnostic_summary, parse_samsung_text
+
+    path = next(x for x in Path("data/raw/samples/samsung_watch").glob("*7-7-26*AM.pdf"))
+    source = read_source_text(path)
+    rows = parse_samsung_text(
+        source.text,
+        source_file=str(path),
+        device="Samsung Watch / SleepWatch",
+        extraction_method=source.extraction_method,
+        confidence=source.confidence,
+        notes=source.notes,
+    )
+    summary = observations_to_nightly_summary(pd.DataFrame(rows))
+    row = summary.iloc[0]
+    assert str(row["night_date"]) == "2026-07-07"
+    assert row["total_sleep_minutes"] == 301
+    assert row["time_in_bed_minutes"] == 371
+    assert row["awake_minutes"] == 70
+    assert row["rem_minutes"] == 53
+    assert row["light_minutes"] == 176
+    assert row["deep_minutes"] == 72
+    assert row["avg_spo2_pct"] == 95
+    assert row["avg_hr_bpm"] == 55
+    assert row["respiratory_rate_bpm"] == 11.9
+
+    diag = diagnostic_summary(source.text)
+    assert "1h 10m" in diag["sleep_duration"]
+    assert "2h 56m" in diag["stages"]
+    assert "Average: 95%" in diag["blood_oxygen"]
+    assert "55 bpm" in diag["heart_rate"]
+    assert "11.9 times/min" in diag["respiratory_rate"]
+
+
+def test_muse_clear_label_layout_regression():
+    from sleeppy.extract.muse import parse_muse_text
+
+    text = """Sleep Session 28
+July 07, 2026
+Start Time 1:12am
+End Time 8:46am
+Time in bed 7h34m
+time asleep 2h14m
+Awake 1h32m
+REM 40m
+Light 1h17m
+Deep 17m
+Heart rate Average: 55 bpm
+Respiratory rate Average: 11.9 times/min
+Restoration Points -1
+"""
+    rows = parse_muse_text(
+        text,
+        source_file="muse_fixture.pdf",
+        device="Muse",
+        extraction_method="ocr",
+        confidence="medium",
+        notes="",
+    )
+    summary = observations_to_nightly_summary(pd.DataFrame(rows))
+    row = summary.iloc[0]
+    assert row["sleep_score"] == 28
+    assert row["time_in_bed_minutes"] == 454
+    assert row["total_sleep_minutes"] == 134
+    assert row["awake_minutes"] == 92
+    assert row["rem_minutes"] == 40
+    assert row["light_minutes"] == 77
+    assert row["deep_minutes"] == 17
+
+
+def test_muse_unsupported_reason_is_explicit():
+    from sleeppy.extract.muse import diagnostic_summary, parse_muse_text
+
+    path = next(x for x in Path("data/raw/samples/muse").glob("*7-7-26*AM.pdf") if not x.name.startswith("._"))
+    source = read_source_text(path)
+    rows = parse_muse_text(
+        source.text,
+        source_file=str(path),
+        device="Muse",
+        extraction_method=source.extraction_method,
+        confidence=source.confidence,
+        notes=source.notes,
+    )
+    assert rows == []
+    diag = diagnostic_summary(source.text)
+    assert "rotated image-only PDF" in diag["reason"]
+    assert "no clear Muse session/stage labels" in diag["reason"]
 
 
 

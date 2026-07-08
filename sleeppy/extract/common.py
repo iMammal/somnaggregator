@@ -501,16 +501,22 @@ def infer_date(text: str, source_file: str | Path, page: int | None = None) -> s
         for pattern in patterns:
             match = re.search(pattern, haystack, flags=re.IGNORECASE)
             if match:
-                return _date_from_match(match)
+                inferred = _date_from_match(match)
+                if inferred is not None:
+                    return inferred
 
         compact = re.search(r"(?<!\d)(?P<year>20\d{2})(?P<month>\d{2})(?P<day>\d{2})(?!\d)", haystack)
         if compact:
-            return _date_from_match(compact)
-        
+            inferred = _date_from_match(compact)
+            if inferred is not None:
+                return inferred
+
         # OSCAR-style 2-digit year (MM-DD-YY)
         mm_dd_yy = re.search(r"\b(?P<month>\d{1,2})[-_/\.](?P<day>\d{1,2})[-_/\.](?P<year>\d{2})\b", haystack)
         if mm_dd_yy:
-            return _date_from_match(mm_dd_yy)
+            inferred = _date_from_match(mm_dd_yy)
+            if inferred is not None:
+                return inferred
 
     return None
 

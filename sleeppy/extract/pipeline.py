@@ -14,6 +14,7 @@ from .common import (
     SUPPORTED_EXTENSIONS,
     check_ocr_environment,
     infer_device_from_path,
+    infer_date,
     read_source_text,
     source_file_label,
     extract_pdf_pages_text,
@@ -115,7 +116,7 @@ def run_sample_extraction(
             if max_files and processed_files_count >= max_files:
                 break
             
-            rows, source_note = _extract_with_details(path, device, parser)
+            rows, source_note, diagnostics = _extract_with_details(path, device, parser)
             observations.extend(rows)
             if len(rows) > 0:
                 extracted_count += 1
@@ -123,6 +124,9 @@ def run_sample_extraction(
             
             if verbose:
                 report_lines.append(f"{get_path_string(path)}: extracted {len(rows)} values for {device}; {source_note}")
+                report_lines.append(_format_file_diagnostic_line(path, device, diagnostics, get_path_string))
+            elif diagnostics["inferred_date"] == "2026-07-07" or len(rows) == 0:
+                report_lines.append(_format_file_diagnostic_line(path, device, diagnostics, get_path_string))
         
         last_time = log_time(f"Parsing files in {folder_name}")
         
@@ -145,13 +149,16 @@ def run_sample_extraction(
                 break
             device = infer_device_from_path(path)
             parser = _parser_for_device(device)
-            rows, source_note = _extract_with_details(path, device, parser)
+            rows, source_note, diagnostics = _extract_with_details(path, device, parser)
             observations.extend(rows)
             processed_files_count += 1
             if verbose:
                 report_lines.append(f"{get_path_string(path)}: extracted {len(rows)} values for inferred device {device}; {source_note}")
+                report_lines.append(_format_file_diagnostic_line(path, device, diagnostics, get_path_string))
             else:
                 report_lines.append(f"{get_path_string(path)}: extracted {len(rows)} values for inferred device {device}.")
+                if diagnostics["inferred_date"] == "2026-07-07" or len(rows) == 0:
+                    report_lines.append(_format_file_diagnostic_line(path, device, diagnostics, get_path_string))
 
     mixed_folder = raw_samples_path / "mixed"
     if mixed_folder.exists():
@@ -243,7 +250,13 @@ def _extract_mixed_files(path: Path, report_lines: list[str]) -> list[dict[str, 
 def _supported_files(folder: Path) -> list[Path]:
     if not folder.exists():
         return []
-    return sorted(path for path in folder.iterdir() if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS)
+    return sorted(
+        path
+        for path in folder.iterdir()
+        if path.is_file()
+        and not path.name.startswith("._")
+        and path.suffix.lower() in SUPPORTED_EXTENSIONS
+    )
 
 
 def _legacy_raw_files(raw_dir: Path) -> list[Path]:
@@ -252,7 +265,7 @@ def _legacy_raw_files(raw_dir: Path) -> list[Path]:
     sample_root = (raw_dir / "samples").resolve()
     files = []
     for path in raw_dir.iterdir():
-        if not path.is_file() or path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+        if not path.is_file() or path.name.startswith("._") or path.suffix.lower() not in SUPPORTED_EXTENSIONS:
             continue
         try:
             path.resolve().relative_to(sample_root)
@@ -271,7 +284,103 @@ def _extract_with_details(path: Path, device: str, parser) -> tuple[list[dict[st
         confidence=source.confidence,
         notes=source.notes,
     )
-    return rows, source.notes
+    diagnostics = {
+        "source_text": source.text,
+        "source_text_length": len(source.text),
+        "page_count": 0,
+        "page_text_lengths": [],
+        "inferred_date": infer_date(source.text, path) or "undated",
+        "metric_names": sorted({str(row.get("metric")) for row in rows if row.get("metric")}),
+        "row_count": len(rows),
+        "reason": _zero_row_reason(device, source.text, path, len(rows)),
+    }
+    if path.suffix.lower() == ".pdf":
+        page_texts = extract_pdf_pages_text(path)
+        diagnostics["page_count"] = len(page_texts)
+        diagnostics["page_text_lengths"] = [len(text) for text in page_texts]
+    return rows, source.notes, diagnostics
+
+
+def _format_file_diagnostic_line(
+    path: Path,
+    device: str,
+    diagnostics: dict[str, object],
+    get_path_string,
+) -> str:
+    metric_names = diagnostics.get("metric_names") or []
+    metric_text = ", ".join(metric_names) if metric_names else "(none)"
+    page_lengths = diagnostics.get("page_text_lengths") or []
+    detail_parts = [
+        f"{get_path_string(path)}:",
+        f"device={device}",
+        f"date={diagnostics.get('inferred_date')}",
+        f"pages={diagnostics.get('page_count')}",
+        f"page_text_lengths={page_lengths}",
+        f"cache_text_length={diagnostics.get('source_text_length')}",
+        f"rows={diagnostics.get('row_count')}",
+        f"metrics={metric_text}",
+    ]
+    reason = diagnostics.get("reason")
+    if reason:
+        detail_parts.append(f"reason={reason}")
+    if device.startswith("Samsung"):
+        from . import samsung as samsung_module
+
+        snippets = samsung_module.diagnostic_summary(str(diagnostics.get("source_text", "")))
+        detail_parts.extend(
+            [
+                f"sleep_duration={snippets.get('sleep_duration')}",
+                f"stages={snippets.get('stages')}",
+                f"blood_oxygen={snippets.get('blood_oxygen')}",
+                f"heart_rate={snippets.get('heart_rate')}",
+                f"respiratory_rate={snippets.get('respiratory_rate')}",
+            ]
+        )
+    elif device == "Muse":
+        from . import muse as muse_module
+
+        snippets = muse_module.diagnostic_summary(str(diagnostics.get("source_text", "")))
+        detail_parts.extend(
+            [
+                f"session={snippets.get('session')}",
+                f"stages={snippets.get('stages')}",
+                f"heart_rate={snippets.get('heart_rate')}",
+                f"respiratory_rate={snippets.get('respiratory_rate')}",
+            ]
+        )
+    elif device.startswith("Oura"):
+        import importlib
+        from . import oura as oura_module
+        importlib.reload(oura_module)
+
+        snippets = oura_module.diagnostic_summary(str(diagnostics.get("source_text", "")))
+        detail_parts.extend(
+            [
+                f"score_card={snippets.get('score_card')}",
+                f"details={snippets.get('details')}",
+                f"hrv={snippets.get('hrv')}",
+            ]
+        )
+    return "; ".join(detail_parts)
+
+
+def _zero_row_reason(device: str, text: str, path: Path, row_count: int) -> str:
+    if row_count > 0:
+        return ""
+    if device == "Muse":
+        from . import muse as muse_module
+
+        reason = muse_module.diagnostic_summary(text).get("reason")
+        if reason:
+            return str(reason)
+        return "Muse OCR text is too sparse for conservative extraction."
+    if device.startswith("Samsung"):
+        return "Samsung OCR text did not expose a conservative sleep block."
+    if device.startswith("Oura"):
+        return "Oura OCR text did not expose a recoverable sleep card."
+    if path.suffix.lower() == ".pdf":
+        return "PDF text extraction returned no usable text."
+    return "No usable OCR text was available."
 
 
 def _parser_for_device(device: str):
