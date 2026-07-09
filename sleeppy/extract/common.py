@@ -843,6 +843,8 @@ def infer_device_from_path(path: Path) -> str:
         return "Oura Ring 3 toe"
     if "samsung" in haystack or "sleepwatch" in haystack:
         return "Samsung Watch / SleepWatch"
+    if "mind_monitor" in haystack or "mindmonitor" in haystack or "musemonitor" in haystack:
+        return "Muse S MindMonitor"
     if "muse" in haystack:
         return "Muse"
     if "oscar" in haystack or "airsense" in haystack or "resmed" in haystack or "cpap" in haystack:

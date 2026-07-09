@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -9,7 +10,7 @@ import pandas as pd
 from sleeppy.quality import write_extraction_outputs
 from sleeppy.schema import OBSERVATION_COLUMNS, ensure_observations_frame
 
-from . import muse, oscar, oura, samsung
+from . import mind_monitor, muse, oscar, oura, samsung
 from .common import (
     SUPPORTED_EXTENSIONS,
     check_ocr_environment,
@@ -30,6 +31,7 @@ DEVICE_FOLDERS = {
     "muse": ("Muse", muse.parse_muse_text),
     "oscar": ("ResMed AirSense 11", oscar.parse_oscar_text),
 }
+MINDMONITOR_REPORT_PREFIX = "MINDMONITOR_REPORT:"
 
 
 def run_sample_extraction(
@@ -139,7 +141,77 @@ def run_sample_extraction(
         if max_files and processed_files_count >= max_files:
             break
 
-    if include_legacy_raw:
+    if not only_folders or "mind_monitor" in only_folders:
+        folder = raw_samples_path / "mind_monitor"
+        folder.mkdir(parents=True, exist_ok=True)
+        files = mind_monitor.find_files(folder)
+        if only_files:
+            files = [f for f in files if f.name in only_files or str(f) in only_files]
+
+        mindmonitor_report: dict[str, object] = {
+            "files_detected": len(files),
+            "rows_parsed": 0,
+            "observations_extracted": 0,
+            "channel_groups": [],
+            "sessions": [],
+        }
+
+        if not files:
+            report_lines.append(f"{get_path_string(folder)}: no MindMonitor CSV files found.")
+        else:
+            last_time = log_time("Scanning files in mind_monitor")
+            extracted_count = 0
+            channel_groups: set[str] = set()
+            sessions: list[dict[str, object]] = []
+
+            for path in files:
+                if max_files and processed_files_count >= max_files:
+                    break
+
+                rows, diagnostics = mind_monitor.extract_file_with_details(path)
+                observations.extend(rows)
+                processed_files_count += 1
+                if rows:
+                    extracted_count += 1
+
+                diagnostic_report = diagnostics.to_report_dict()
+                mindmonitor_report["rows_parsed"] = int(mindmonitor_report["rows_parsed"]) + int(diagnostic_report["rows_parsed"])
+                mindmonitor_report["observations_extracted"] = int(mindmonitor_report["observations_extracted"]) + int(
+                    diagnostic_report["observations_extracted"]
+                )
+                channel_groups.update(str(group) for group in diagnostic_report["channel_groups"])
+                sessions.append(
+                    {
+                        "source_file": get_path_string(path),
+                        "rows_parsed": diagnostic_report["rows_parsed"],
+                        "observations_extracted": diagnostic_report["observations_extracted"],
+                        "session_start": diagnostic_report["session_start"],
+                        "session_end": diagnostic_report["session_end"],
+                        "session_minutes": diagnostic_report["session_minutes"],
+                        "error": diagnostic_report["error"],
+                    }
+                )
+
+                if verbose:
+                    report_lines.append(
+                        f"{get_path_string(path)}: extracted {len(rows)} MindMonitor values; "
+                        f"rows={diagnostic_report['rows_parsed']}; "
+                        f"session_minutes={diagnostic_report['session_minutes']}; "
+                        f"channel_groups={', '.join(diagnostic_report['channel_groups']) or '(none)'}"
+                    )
+
+            mindmonitor_report["channel_groups"] = sorted(channel_groups)
+            mindmonitor_report["sessions"] = sessions
+            if not verbose:
+                report_lines.append(
+                    f"{get_path_string(folder)}: MindMonitor files detected; "
+                    f"{extracted_count} of {len(files)} produced values."
+                )
+            last_time = log_time("Parsing files in mind_monitor")
+
+        report_lines.append(f"{MINDMONITOR_REPORT_PREFIX}{json.dumps(mindmonitor_report, sort_keys=True)}")
+
+    if include_legacy_raw and not only_folders:
         legacy_files = _legacy_raw_files(raw_samples_path.parent)
         if only_files:
             legacy_files = [f for f in legacy_files if f.name in only_files or str(f) in only_files]
@@ -274,7 +346,7 @@ def _legacy_raw_files(raw_dir: Path) -> list[Path]:
     return sorted(files)
 
 
-def _extract_with_details(path: Path, device: str, parser) -> tuple[list[dict[str, object]], str]:
+def _extract_with_details(path: Path, device: str, parser) -> tuple[list[dict[str, object]], str, dict[str, object]]:
     source = read_source_text(path)
     rows = parser(
         source.text,

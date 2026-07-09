@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -20,6 +21,7 @@ from .schema import (
 
 
 CONFIDENCE_RANK = {"high": 3, "medium": 2, "low": 1}
+MINDMONITOR_REPORT_PREFIX = "MINDMONITOR_REPORT:"
 
 
 def confidence_rank(label: object) -> int:
@@ -211,7 +213,7 @@ def build_extraction_report(
     lines = [
         "# SleepPy Extraction Report",
         "",
-        "This report summarizes automated first-pass extraction from screenshots and PDFs.",
+        "This report summarizes automated first-pass extraction from screenshots, PDFs, and CSV sensor logs.",
         "",
         "This is exploratory wellness data analysis only. It is not medical diagnosis, treatment advice, or a replacement for clinician review.",
         "",
@@ -246,9 +248,15 @@ def build_extraction_report(
     else:
         lines.append("- No CPAP metrics detected; CPAP/OSCAR/SleepScope is optional.")
 
+    mindmonitor_report = _mindmonitor_report_from_lines(report_lines) or _mindmonitor_report_from_observations(observations)
+    if mindmonitor_report is not None:
+        lines.extend(["", "## MindMonitor", ""])
+        lines.extend(_format_mindmonitor_report(mindmonitor_report))
+
     if report_lines:
+        visible_report_lines = [line for line in report_lines if not str(line).startswith(MINDMONITOR_REPORT_PREFIX)]
         lines.extend(["", "## File Notes", ""])
-        lines.extend([f"- {line}" for line in report_lines])
+        lines.extend([f"- {line}" for line in visible_report_lines])
 
     warnings = check_physiological_sanity(nightly_summary)
     if warnings:
@@ -272,6 +280,118 @@ def build_extraction_report(
         ]
     )
     return "\n".join(lines) + "\n"
+
+
+def _mindmonitor_report_from_lines(report_lines: list[str] | None) -> dict[str, object] | None:
+    if not report_lines:
+        return None
+    for line in report_lines:
+        text = str(line)
+        if not text.startswith(MINDMONITOR_REPORT_PREFIX):
+            continue
+        try:
+            report = json.loads(text.removeprefix(MINDMONITOR_REPORT_PREFIX))
+        except json.JSONDecodeError:
+            return None
+        return report if isinstance(report, dict) else None
+    return None
+
+
+def _mindmonitor_report_from_observations(observations: pd.DataFrame) -> dict[str, object] | None:
+    if observations.empty or "device" not in observations:
+        return None
+    obs = observations[observations["device"].astype(str).eq("Muse S MindMonitor")]
+    if obs.empty:
+        return None
+    rows_parsed = _sum_metric(obs, "mindmonitor_rows")
+    session_minutes = _sum_metric(obs, "mindmonitor_session_minutes")
+    return {
+        "files_detected": int(obs["source_file"].nunique()),
+        "rows_parsed": int(rows_parsed) if rows_parsed is not None else 0,
+        "observations_extracted": int(len(obs)),
+        "channel_groups": _infer_mindmonitor_channel_groups(obs),
+        "sessions": [
+            {
+                "source_file": str(source_file),
+                "rows_parsed": int(_sum_metric(group, "mindmonitor_rows") or 0),
+                "observations_extracted": int(len(group)),
+                "session_start": None,
+                "session_end": None,
+                "session_minutes": _sum_metric(group, "mindmonitor_session_minutes"),
+                "error": None,
+            }
+            for source_file, group in obs.groupby("source_file", sort=True)
+        ],
+        "session_minutes": session_minutes,
+    }
+
+
+def _format_mindmonitor_report(report: dict[str, object]) -> list[str]:
+    files_detected = int(report.get("files_detected") or 0)
+    rows_parsed = int(report.get("rows_parsed") or 0)
+    observations_extracted = int(report.get("observations_extracted") or 0)
+    channel_groups = report.get("channel_groups") or []
+    if not isinstance(channel_groups, list):
+        channel_groups = []
+
+    lines = [
+        f"- Files detected: {files_detected}",
+        f"- Rows parsed: {rows_parsed}",
+        f"- Channel groups detected: {', '.join(map(str, channel_groups)) if channel_groups else '(none)'}",
+        f"- Observations extracted: {observations_extracted}",
+    ]
+
+    sessions = report.get("sessions") or []
+    if isinstance(sessions, list) and sessions:
+        lines.append("- Session duration:")
+        for session in sessions:
+            if not isinstance(session, dict):
+                continue
+            source = session.get("source_file") or "(unknown source)"
+            error = session.get("error")
+            if error:
+                lines.append(f"  - {source}: parse failed ({error})")
+                continue
+            duration = session.get("session_minutes")
+            start = session.get("session_start") or "unknown start"
+            end = session.get("session_end") or "unknown end"
+            lines.append(f"  - {source}: {duration if duration is not None else 'unknown'} minutes ({start} to {end})")
+    elif files_detected == 0:
+        lines.append("- Session duration: no MindMonitor CSV files detected.")
+    else:
+        lines.append("- Session duration: unavailable.")
+    return lines
+
+
+def _sum_metric(observations: pd.DataFrame, metric: str) -> float | None:
+    if observations.empty:
+        return None
+    values = pd.to_numeric(observations.loc[observations["metric"].eq(metric), "value"], errors="coerce")
+    if values.dropna().empty:
+        return None
+    return float(values.sum())
+
+
+def _infer_mindmonitor_channel_groups(observations: pd.DataFrame) -> list[str]:
+    metrics = set(observations["metric"].astype(str))
+    groups = []
+    if "mindmonitor_valid_eeg_rows" in metrics:
+        groups.append("eeg_raw")
+    if any(metric in metrics for metric in ["mindmonitor_mean_delta", "mindmonitor_mean_theta", "mindmonitor_mean_alpha", "mindmonitor_mean_beta", "mindmonitor_mean_gamma"]):
+        groups.append("bandpower")
+    if any(metric in metrics for metric in ["mindmonitor_mean_accel_mag", "mindmonitor_p95_accel_mag"]):
+        groups.append("accelerometer")
+    if any(metric in metrics for metric in ["mindmonitor_mean_gyro_mag", "mindmonitor_p95_gyro_mag"]):
+        groups.append("gyroscope")
+    if "mindmonitor_valid_ppg_rows" in metrics:
+        groups.append("ppg")
+    if any(metric in metrics for metric in ["mindmonitor_mean_hr_bpm", "mindmonitor_median_hr_bpm"]):
+        groups.append("heart_rate")
+    if any(metric.startswith("mindmonitor_mean_hsi_") for metric in metrics) or "mindmonitor_headband_on_fraction" in metrics:
+        groups.append("hsi/contact")
+    if any(metric in metrics for metric in ["mindmonitor_battery_min", "mindmonitor_battery_max"]):
+        groups.append("battery")
+    return groups
 
 
 def _min_confidence(values: pd.Series) -> str:
@@ -431,6 +551,23 @@ def check_physiological_sanity(nightly_summary: pd.DataFrame) -> list[str]:
     warnings = []
     if nightly_summary.empty:
         return warnings
+
+    nightly_summary = nightly_summary.copy()
+    numeric_columns = [
+        "avg_spo2_pct",
+        "avg_hr_bpm",
+        "min_hr_bpm",
+        "sleep_efficiency_pct",
+        "total_sleep_minutes",
+        "time_in_bed_minutes",
+        "rem_minutes",
+        "light_minutes",
+        "deep_minutes",
+        "awake_minutes",
+    ]
+    for column in numeric_columns:
+        if column in nightly_summary.columns:
+            nightly_summary[column] = pd.to_numeric(nightly_summary[column], errors="coerce")
 
     # - avg_spo2_pct should usually be 70-100
     if "avg_spo2_pct" in nightly_summary.columns:

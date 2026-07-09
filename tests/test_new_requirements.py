@@ -5,6 +5,16 @@ from sleeppy.quality import check_physiological_sanity, derive_duration_semantic
 from sleeppy.extract.pipeline import run_sample_extraction
 from sleeppy.extract.common import infer_date, check_ocr_environment, parse_wellness_text, read_source_text
 from sleeppy.extract.oura import parse_oura_text
+from sleeppy.extract.mind_monitor import DEVICE_NAME as MINDMONITOR_DEVICE, extract_file as extract_mindmonitor_file
+
+FIXTURES_DIR = Path(__file__).parent / "fixtures"
+MINDMONITOR_FIXTURE = FIXTURES_DIR / "mind_monitor" / "sample_mindmonitor.csv"
+
+
+def _metric_value(rows, metric):
+    matches = [row for row in rows if row["metric"] == metric]
+    assert matches, f"Expected metric {metric!r} in {rows}"
+    return matches[0]["value"]
 
 def test_check_physiological_sanity():
     df = pd.DataFrame([
@@ -434,3 +444,106 @@ def test_stdout_reconfigure_compatibility():
             
     finally:
         sys.stdout = original_stdout
+
+
+def test_mindmonitor_parser_reads_fixture_and_computes_session_metrics():
+    rows = extract_mindmonitor_file(MINDMONITOR_FIXTURE)
+    metrics = {row["metric"] for row in rows}
+
+    assert rows
+    assert {row["device"] for row in rows} == {MINDMONITOR_DEVICE}
+    assert {str(row["night_date"]) for row in rows} == {"2026-05-09"}
+    assert {row["extraction_method"] for row in rows} == {"csv"}
+    assert {row["confidence"] for row in rows} == {"medium"}
+
+    assert _metric_value(rows, "mindmonitor_session_minutes") == 3
+    assert _metric_value(rows, "mindmonitor_rows") == 4
+    assert _metric_value(rows, "mindmonitor_valid_eeg_rows") == 3
+    assert _metric_value(rows, "mindmonitor_valid_motion_rows") == 4
+    assert _metric_value(rows, "mindmonitor_valid_ppg_rows") == 3
+    assert _metric_value(rows, "mindmonitor_mean_hr_bpm") == 62
+    assert _metric_value(rows, "mindmonitor_median_hr_bpm") == 62
+    assert _metric_value(rows, "mindmonitor_mean_accel_mag") == pytest.approx(2.667)
+    assert _metric_value(rows, "mindmonitor_p95_accel_mag") == pytest.approx(4.7)
+    assert _metric_value(rows, "mindmonitor_headband_on_fraction") == pytest.approx(0.75)
+    assert _metric_value(rows, "mindmonitor_battery_min") == 87
+    assert _metric_value(rows, "mindmonitor_battery_max") == 90
+    assert "mindmonitor_mean_delta" in metrics
+    assert "no sleep staging performed" in str(rows[0]["notes"])
+    assert "columns present=" in str(rows[0]["notes"])
+
+
+def test_mindmonitor_filename_date_takes_precedence(tmp_path):
+    target = tmp_path / "museMonitor_2026-05-10--03-19-42_test.csv"
+    target.write_text(MINDMONITOR_FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
+
+    rows = extract_mindmonitor_file(target)
+
+    assert {str(row["night_date"]) for row in rows} == {"2026-05-10"}
+
+
+def test_mindmonitor_missing_bandpower_columns_do_not_error(tmp_path):
+    target = tmp_path / "sample_without_bandpower.csv"
+    target.write_text(
+        "\n".join(
+            [
+                "TimeStamp,RAW_TP9,RAW_AF7,RAW_AF8,RAW_TP10,Accelerometer_X,Accelerometer_Y,Accelerometer_Z,Heart_Rate",
+                "2026-05-09 03:19:42,100,101,102,103,0,0,1,60",
+                "2026-05-09 03:20:42,110,111,112,113,0,0,2,62",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    rows = extract_mindmonitor_file(target)
+    metrics = {row["metric"] for row in rows}
+
+    assert _metric_value(rows, "mindmonitor_rows") == 2
+    assert "mindmonitor_mean_delta" not in metrics
+    assert "mindmonitor_mean_alpha" not in metrics
+
+
+def test_only_folder_mind_monitor_processes_no_unrelated_folders(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    samples_dir = tmp_path / "data" / "raw" / "samples"
+    mind_dir = samples_dir / "mind_monitor" / "2026-05-09" / "raw"
+    oura_dir = samples_dir / "oura4"
+    mind_dir.mkdir(parents=True)
+    oura_dir.mkdir(parents=True)
+    (mind_dir / "museMonitor_2026-05-09--03-19-42_test.csv").write_text(
+        MINDMONITOR_FIXTURE.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (oura_dir / "should_not_process.jpg").write_text("Sleep 6h 52m", encoding="utf-8")
+
+    _summary, observations, report_path = run_sample_extraction(
+        raw_samples_dir=samples_dir,
+        processed_dir=tmp_path / "processed",
+        outputs_dir=tmp_path / "outputs",
+        only_folders=["mind_monitor"],
+    )
+
+    assert not observations.empty
+    assert set(observations["device"]) == {MINDMONITOR_DEVICE}
+    assert not observations["source_file"].str.contains("should_not_process", regex=False).any()
+    report_text = report_path.read_text(encoding="utf-8")
+    assert "## MindMonitor" in report_text
+    assert "Files detected: 1" in report_text
+
+
+def test_full_extraction_does_not_fail_when_mind_monitor_folder_absent(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    samples_dir = tmp_path / "data" / "raw" / "samples"
+    samples_dir.mkdir(parents=True)
+
+    _summary, observations, report_path = run_sample_extraction(
+        raw_samples_dir=samples_dir,
+        processed_dir=tmp_path / "processed",
+        outputs_dir=tmp_path / "outputs",
+        include_legacy_raw=False,
+    )
+
+    assert observations.empty
+    report_text = report_path.read_text(encoding="utf-8")
+    assert "## MindMonitor" in report_text
+    assert "Files detected: 0" in report_text
