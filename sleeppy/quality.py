@@ -400,28 +400,30 @@ def derive_duration_semantics(summary: pd.DataFrame) -> pd.DataFrame:
                      (summary["total_sleep_minutes"].notna()) & \
                      (summary["awake_minutes"].notna())
 
-        # Work on subset to avoid alignment issues
-        subset = summary.loc[mask_awake, :].copy()
-        subset["total_sleep_minutes"] = pd.to_numeric(subset["total_sleep_minutes"], errors="coerce")
-        subset["awake_minutes"] = pd.to_numeric(subset["awake_minutes"], errors="coerce")
-        subset["time_in_bed_minutes"] = pd.to_numeric(subset["time_in_bed_minutes"], errors="coerce")
-
-        derived_tib = subset["total_sleep_minutes"] + subset["awake_minutes"]
-        current_tib = subset["time_in_bed_minutes"]
+        # Calculate correction mask on full summary to avoid index alignment issues
+        total_sleep = pd.to_numeric(summary["total_sleep_minutes"], errors="coerce")
+        awake = pd.to_numeric(summary["awake_minutes"], errors="coerce")
+        current_tib = pd.to_numeric(summary["time_in_bed_minutes"], errors="coerce")
+        
+        derived_tib = total_sleep + awake
         mask_correction = current_tib.isna() | (derived_tib > current_tib) | ((derived_tib - current_tib).abs() <= 1)
-
-        if mask_awake.any():
-            subset.loc[mask_correction, "time_in_bed_minutes"] = derived_tib[mask_correction]
-            subset.loc[mask_correction, "notes"] = subset.loc[mask_correction, "notes"].fillna("") + "; time_in_bed_minutes corrected from total_sleep+awake"
-            
-            summary.loc[mask_awake, "time_in_bed_minutes"] = subset["time_in_bed_minutes"]
-            summary.loc[mask_awake, "notes"] = subset["notes"]
+        
+        mask_final = mask_awake & mask_correction
+        if mask_final.any():
+            summary.loc[mask_final, "time_in_bed_minutes"] = derived_tib[mask_final]
+            summary.loc[mask_final, "notes"] = (
+                summary.loc[mask_final, "notes"].fillna("") + "; time_in_bed_minutes corrected from total_sleep+awake"
+            )
 
     if "device" in summary.columns:
         oura_mask = summary["device"].astype(str).str.startswith("Oura", na=False)
         if oura_mask.any():
-            updated_subset = summary.loc[oura_mask].apply(_normalize_oura_duration_row, axis=1)
-            summary.update(updated_subset)
+            # Apply only to relevant rows, and assign column by column to avoid dtype mismatch
+            updated = summary.loc[oura_mask].apply(_normalize_oura_duration_row, axis=1)
+            for col in updated.columns:
+                if col in summary.columns:
+                    target_dtype = summary[col].dtype
+                    summary.loc[oura_mask, col] = updated[col].astype(target_dtype)
 
     return summary
 
