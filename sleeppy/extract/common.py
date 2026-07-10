@@ -431,31 +431,14 @@ def load_metric_overrides() -> dict[str, dict[int | None, dict[str, str]]]:
 
 
 def infer_date(text: str, source_file: str | Path, page: int | None = None) -> str | None:
-    """Infer a YYYY-MM-DD date from OCR text or source filename."""
+    """Infer a YYYY-MM-DD date from mapping, filename, dated parent folder, or OCR text."""
 
-    # Check filename in manual mapping first
     path = Path(source_file)
     mapping = load_date_mapping()
 
-    # Try match by exact relative path (normalized to POSIX)
-    try:
-        rel_path = path.resolve().relative_to(Path.cwd().resolve())
-        rel_path_posix = rel_path.as_posix()
-        if rel_path_posix in mapping:
-            if page in mapping[rel_path_posix]:
-                return mapping[rel_path_posix][page]["date"]
-            if 0 in mapping[rel_path_posix]:
-                return mapping[rel_path_posix][0]["date"]
-    except ValueError:
-        pass
-
-    # Fallback to name
-    name = path.name
-    if name in mapping:
-        if page in mapping[name]:
-            return mapping[name][page]["date"]
-        if 0 in mapping[name]:
-            return mapping[name][0]["date"]
+    manual_date = _mapped_date_for_path(path, mapping, page)
+    if manual_date:
+        return manual_date
 
     patterns = [
         r"\b(?P<year>20\d{2})[-_/\.](?P<month>\d{1,2})[-_/\.](?P<day>\d{1,2})\b",
@@ -471,31 +454,76 @@ def infer_date(text: str, source_file: str | Path, page: int | None = None) -> s
     
     # For Oura, "May 28, 2026" should be covered by pattern #3 above.
     
-    haystacks = [text, str(source_file)]
-    if "OSCAR" in str(source_file):
-        haystacks = [str(source_file), text]
+    filename_date = _date_from_haystack(path.name, patterns)
+    if filename_date:
+        return filename_date
 
-    for haystack in haystacks:
-        for pattern in patterns:
-            match = re.search(pattern, haystack, flags=re.IGNORECASE)
-            if match:
-                inferred = _date_from_match(match)
-                if inferred is not None:
-                    return inferred
+    folder_date = _date_from_parent_folder(path)
+    if folder_date:
+        return folder_date
 
-        compact = re.search(r"(?<!\d)(?P<year>20\d{2})(?P<month>\d{2})(?P<day>\d{2})(?!\d)", haystack)
-        if compact:
-            inferred = _date_from_match(compact)
+    content_date = _date_from_haystack(text, patterns)
+    if content_date:
+        return content_date
+
+    return None
+
+
+def _mapped_date_for_path(
+    path: Path,
+    mapping: dict[str, dict[int | None, dict[str, str]]],
+    page: int | None,
+) -> str | None:
+    lookup_keys = []
+    try:
+        lookup_keys.append(path.resolve().relative_to(Path.cwd().resolve()).as_posix())
+    except ValueError:
+        pass
+    lookup_keys.extend([path.as_posix(), path.name])
+
+    for key in dict.fromkeys(lookup_keys):
+        if key not in mapping:
+            continue
+        if page in mapping[key]:
+            return mapping[key][page]["date"]
+        if 0 in mapping[key]:
+            return mapping[key][0]["date"]
+    return None
+
+
+def _date_from_haystack(haystack: str, patterns: list[str]) -> str | None:
+    for pattern in patterns:
+        match = re.search(pattern, haystack, flags=re.IGNORECASE)
+        if match:
+            inferred = _date_from_match(match)
             if inferred is not None:
                 return inferred
 
-        # OSCAR-style 2-digit year (MM-DD-YY)
-        mm_dd_yy = re.search(r"\b(?P<month>\d{1,2})[-_/\.](?P<day>\d{1,2})[-_/\.](?P<year>\d{2})\b", haystack)
-        if mm_dd_yy:
-            inferred = _date_from_match(mm_dd_yy)
-            if inferred is not None:
-                return inferred
+    compact = re.search(r"(?<!\d)(?P<year>20\d{2})(?P<month>\d{2})(?P<day>\d{2})(?!\d)", haystack)
+    if compact:
+        inferred = _date_from_match(compact)
+        if inferred is not None:
+            return inferred
 
+    mm_dd_yy = re.search(r"\b(?P<month>\d{1,2})[-_/\.](?P<day>\d{1,2})[-_/\.](?P<year>\d{2})\b", haystack)
+    if mm_dd_yy:
+        inferred = _date_from_match(mm_dd_yy)
+        if inferred is not None:
+            return inferred
+
+    return None
+
+
+def _date_from_parent_folder(path: Path) -> str | None:
+    for parent in path.parents:
+        if parent.name in {"", "."}:
+            continue
+        match = re.fullmatch(r"(?P<year>20\d{2})-(?P<month>\d{2})-(?P<day>\d{2})", parent.name)
+        if not match:
+            continue
+        inferred = _date_from_match(match)
+        if inferred is not None:
+            return inferred
     return None
 
 

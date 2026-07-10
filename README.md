@@ -55,6 +55,18 @@ sample.ipynb   # Main extraction and analysis notebook
    - `data/raw/samples/oscar/`
    - `data/raw/samples/mixed/` (For PDFs containing multiple devices)
 
+   Screenshots can also be grouped by wake/report date to avoid manual date rows for generic phone filenames:
+
+   ```text
+   data/raw/samples/oura4/2026-07-09/IMG_1087.PNG
+   data/raw/samples/oura3/2026-07-09/IMG_1088.PNG
+   data/raw/samples/samsung_watch/2026-07-09/Screenshot.png
+   data/raw/samples/muse/2026-07-09/Screenshot.png
+   data/raw/samples/mind_monitor/2026-07-09/raw/museMonitor_....csv
+   ```
+
+   Manual `data/manual_date_mapping.csv` rows still take priority. Otherwise the extractor uses an explicit filename date first, then a parent folder named `YYYY-MM-DD`, then any supported OCR/content date.
+
    Real screenshots, PDFs, exports, and reports contain personal health data and should stay out of git. The repository ignores raw data by default and only preserves sample directory placeholders with `.gitkeep`.
 3. Run first-pass extraction:
 

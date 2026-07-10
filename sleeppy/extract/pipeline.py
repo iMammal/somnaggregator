@@ -399,7 +399,7 @@ def _supported_files(folder: Path) -> list[Path]:
         return []
     return sorted(
         path
-        for path in folder.iterdir()
+        for path in folder.rglob("*")
         if path.is_file()
         and not path.name.startswith("._")
         and path.suffix.lower() in SUPPORTED_EXTENSIONS

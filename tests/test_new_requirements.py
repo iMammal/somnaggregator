@@ -157,6 +157,73 @@ def test_path_normalization_date_mapping(tmp_path, monkeypatch):
     # Test Basename fallback
     assert infer_date("some text", "file.jpeg") == "2026-07-04"
 
+
+def test_generic_filename_under_dated_oura_folder_infers_folder_date():
+    path = Path("data/raw/samples/oura4/2026-07-09/IMG_1087.PNG")
+
+    assert infer_date("", path) == "2026-07-09"
+
+
+def test_filename_date_still_works_for_top_level_files():
+    path = Path("data/raw/samples/oura4/IMG_1062 Combined 20260707.pdf")
+
+    assert infer_date("", path) == "2026-07-07"
+
+
+def test_manual_date_mapping_overrides_dated_folder(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    mapping_dir = tmp_path / "data"
+    mapping_dir.mkdir()
+    mapping_path = mapping_dir / "manual_date_mapping.csv"
+    mapping_path.write_text(
+        "path,date\ndata/raw/samples/oura4/2026-07-09/IMG_1087.PNG,2026-07-10\n",
+        encoding="utf-8",
+    )
+
+    path = Path("data/raw/samples/oura4/2026-07-09/IMG_1087.PNG")
+
+    assert infer_date("", path) == "2026-07-10"
+
+
+def test_recursive_scan_finds_files_in_dated_subfolders(tmp_path):
+    from sleeppy.extract.pipeline import _supported_files
+
+    folder = tmp_path / "data" / "raw" / "samples" / "oura4"
+    nested = folder / "2026-07-09"
+    nested.mkdir(parents=True)
+    top_level = folder / "top_level.PNG"
+    nested_file = nested / "IMG_1087.PNG"
+    top_level.write_text("not a real image", encoding="utf-8")
+    nested_file.write_text("not a real image", encoding="utf-8")
+
+    files = _supported_files(folder)
+
+    assert top_level in files
+    assert nested_file in files
+
+
+def test_only_folder_oura4_processes_nested_files_only(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    samples_dir = tmp_path / "data" / "raw" / "samples"
+    oura_nested = samples_dir / "oura4" / "2026-07-09"
+    samsung_nested = samples_dir / "samsung_watch" / "2026-07-09"
+    oura_nested.mkdir(parents=True)
+    samsung_nested.mkdir(parents=True)
+    (oura_nested / "IMG_1087.PNG").write_text("not a real image", encoding="utf-8")
+    (samsung_nested / "Screenshot.png").write_text("not a real image", encoding="utf-8")
+
+    _summary, _observations, report_path = run_sample_extraction(
+        raw_samples_dir=samples_dir,
+        processed_dir=tmp_path / "processed",
+        outputs_dir=tmp_path / "outputs",
+        only_folders=["oura4"],
+    )
+    report_text = report_path.read_text(encoding="utf-8")
+
+    assert "IMG_1087.PNG" in report_text
+    assert "date=2026-07-09" in report_text
+    assert "Screenshot.png" not in report_text
+
 def test_duration_correction_total_sleep_plus_awake():
     df = pd.DataFrame([
         {"device": "Oura Ring", "total_sleep_minutes": 381, "awake_minutes": 48, "time_in_bed_minutes": 381, "sleep_efficiency_pct": 89, "notes": ""},

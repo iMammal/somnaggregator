@@ -26,3 +26,6 @@ data/raw/*
 # Synthetic/de-identified test fixtures are safe to track.
 !tests/fixtures/
 !tests/fixtures/**
+/data/manual_date_mapping_old.csv
+/data/manual_date_mapping_paths.csv
+/data/manual_metric_overrides.csv

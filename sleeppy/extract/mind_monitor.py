@@ -269,7 +269,7 @@ def parse_mindmonitor_frame(
 
 
 def infer_night_date(source_file: str | Path, timestamps: pd.Series | None = None) -> str | None:
-    """Infer night_date from MindMonitor timestamps first, then filename date."""
+    """Infer night_date from timestamps, then filename, then dated parent folder."""
 
     if timestamps is not None and timestamps.notna().any():
         valid = timestamps.dropna().sort_values()
@@ -287,6 +287,9 @@ def infer_night_date(source_file: str | Path, timestamps: pd.Series | None = Non
     match = FILENAME_DATE_RE.search(str(source_file))
     if match:
         return match.group("date")
+    folder_date = _date_from_parent_folder(Path(source_file))
+    if folder_date:
+        return folder_date
     return None
 
 
@@ -382,6 +385,13 @@ def _timestamp_gap_stats(timestamps: pd.Series) -> tuple[int, float | None]:
     if positive_gaps.empty:
         return 0, 0.0
     return int((positive_gaps > 5).sum()), float(positive_gaps.max())
+
+
+def _date_from_parent_folder(path: Path) -> str | None:
+    for parent in path.parents:
+        if re.fullmatch(r"20\d{2}-\d{2}-\d{2}", parent.name):
+            return parent.name
+    return None
 
 
 def _numeric_series(df: pd.DataFrame, column: str) -> pd.Series:
