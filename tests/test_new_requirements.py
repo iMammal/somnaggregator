@@ -3,7 +3,7 @@ import pytest
 from pathlib import Path
 from sleeppy.quality import check_physiological_sanity, derive_duration_semantics, observations_to_nightly_summary
 from sleeppy.extract.pipeline import run_sample_extraction
-from sleeppy.extract.common import infer_date, check_ocr_environment, parse_wellness_text, read_source_text
+from sleeppy.extract.common import SourceText, infer_date, check_ocr_environment, parse_wellness_text, read_source_text
 from sleeppy.extract.oura import parse_oura_text
 from sleeppy.extract.mind_monitor import DEVICE_NAME as MINDMONITOR_DEVICE, extract_file as extract_mindmonitor_file
 
@@ -203,16 +203,28 @@ def test_recursive_scan_finds_files_in_dated_subfolders(tmp_path):
 
 
 def test_only_folder_oura4_processes_nested_files_only(tmp_path, monkeypatch):
+    import sleeppy.extract.pipeline as pipeline
+
     monkeypatch.chdir(tmp_path)
     samples_dir = tmp_path / "data" / "raw" / "samples"
     oura_nested = samples_dir / "oura4" / "2026-07-09"
     samsung_nested = samples_dir / "samsung_watch" / "2026-07-09"
     oura_nested.mkdir(parents=True)
     samsung_nested.mkdir(parents=True)
-    (oura_nested / "IMG_1087.PNG").write_text("not a real image", encoding="utf-8")
+    (oura_nested / "IMG_1084.PNG").write_text("not a real image", encoding="utf-8")
     (samsung_nested / "Screenshot.png").write_text("not a real image", encoding="utf-8")
+    monkeypatch.setattr(
+        pipeline,
+        "read_source_text",
+        lambda path: SourceText(
+            text="Sleep 6h 52m",
+            extraction_method="test",
+            confidence="medium",
+            notes="mocked text extraction",
+        ),
+    )
 
-    _summary, _observations, report_path = run_sample_extraction(
+    _summary, observations, report_path = run_sample_extraction(
         raw_samples_dir=samples_dir,
         processed_dir=tmp_path / "processed",
         outputs_dir=tmp_path / "outputs",
@@ -220,9 +232,85 @@ def test_only_folder_oura4_processes_nested_files_only(tmp_path, monkeypatch):
     )
     report_text = report_path.read_text(encoding="utf-8")
 
-    assert "IMG_1087.PNG" in report_text
-    assert "date=2026-07-09" in report_text
+    assert not observations.empty
+    assert set(observations["device"]) == {"Oura Ring 4 finger"}
+    assert set(observations["night_date"].astype(str)) == {"2026-07-09"}
+    assert "IMG_1084.PNG" in {Path(source).name for source in observations["source_file"]}
+    written = pd.read_csv(tmp_path / "processed" / "device_observations_long.csv")
+    assert "IMG_1084.PNG" in {Path(source).name for source in written["source_file"]}
     assert "Screenshot.png" not in report_text
+
+
+def test_full_extraction_includes_nested_dated_oura_files(tmp_path, monkeypatch):
+    import sleeppy.extract.pipeline as pipeline
+
+    monkeypatch.chdir(tmp_path)
+    samples_dir = tmp_path / "data" / "raw" / "samples"
+    oura4_nested = samples_dir / "oura4" / "2026-07-09"
+    oura3_nested = samples_dir / "oura3" / "2026-07-09"
+    oura4_nested.mkdir(parents=True)
+    oura3_nested.mkdir(parents=True)
+    (oura4_nested / "IMG_1084.PNG").write_text("not a real image", encoding="utf-8")
+    (oura3_nested / "IMG_1088.PNG").write_text("not a real image", encoding="utf-8")
+    monkeypatch.setattr(
+        pipeline,
+        "read_source_text",
+        lambda path: SourceText(
+            text="Sleep 6h 52m",
+            extraction_method="test",
+            confidence="medium",
+            notes="mocked text extraction",
+        ),
+    )
+
+    _summary, observations, report_path = run_sample_extraction(
+        raw_samples_dir=samples_dir,
+        processed_dir=tmp_path / "processed",
+        outputs_dir=tmp_path / "outputs",
+        include_legacy_raw=False,
+    )
+
+    source_files = set(observations["source_file"])
+    assert "IMG_1084.PNG" in {Path(source).name for source in source_files}
+    assert "IMG_1088.PNG" in {Path(source).name for source in source_files}
+    assert {"Oura Ring 4 finger", "Oura Ring 3 toe"}.issubset(set(observations["device"]))
+    assert "2026-07-09" in set(observations["night_date"].astype(str))
+    written = pd.read_csv(tmp_path / "processed" / "device_observations_long.csv")
+    written_sources = {str(source).replace("\\", "/") for source in written["source_file"]}
+    assert "data/raw/samples/oura4/2026-07-09/IMG_1084.PNG" in written_sources
+    assert "data/raw/samples/oura3/2026-07-09/IMG_1088.PNG" in written_sources
+
+
+def test_verbose_logs_discovered_nested_file_paths(tmp_path, monkeypatch, capsys):
+    import sleeppy.extract.pipeline as pipeline
+
+    monkeypatch.chdir(tmp_path)
+    samples_dir = tmp_path / "data" / "raw" / "samples"
+    nested = samples_dir / "oura4" / "2026-07-09"
+    nested.mkdir(parents=True)
+    (nested / "IMG_1084.PNG").write_text("not a real image", encoding="utf-8")
+    monkeypatch.setattr(
+        pipeline,
+        "read_source_text",
+        lambda path: SourceText(
+            text="Sleep 6h 52m",
+            extraction_method="test",
+            confidence="medium",
+            notes="mocked text extraction",
+        ),
+    )
+
+    run_sample_extraction(
+        raw_samples_dir=samples_dir,
+        processed_dir=tmp_path / "processed",
+        outputs_dir=tmp_path / "outputs",
+        only_folders=["oura4"],
+        verbose=True,
+    )
+
+    output = capsys.readouterr().out.replace("\\", "/")
+    assert "DEBUG: Discovered 1 files in oura4:" in output
+    assert "data/raw/samples/oura4/2026-07-09/IMG_1084.PNG" in output
 
 def test_duration_correction_total_sleep_plus_awake():
     df = pd.DataFrame([

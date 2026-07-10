@@ -105,6 +105,8 @@ def run_sample_extraction(
         files = _supported_files(folder)
         if only_files:
             files = [f for f in files if f.name in only_files or str(f) in only_files]
+        if verbose:
+            _print_discovered_files(folder_name, files, get_path_string)
         
         if not files:
             report_lines.append(f"{get_path_string(folder)}: no sample files found.")
@@ -148,6 +150,8 @@ def run_sample_extraction(
         files = mind_monitor.find_files(folder)
         if only_files:
             files = [f for f in files if f.name in only_files or str(f) in only_files]
+        if verbose:
+            _print_discovered_files("mind_monitor", files, get_path_string)
 
         mindmonitor_report: dict[str, object] = {
             "files_detected": len(files),
@@ -250,6 +254,8 @@ def run_sample_extraction(
             mixed_files = _supported_files(mixed_folder)
             if only_files:
                 mixed_files = [f for f in mixed_files if f.name in only_files or str(f) in only_files]
+            if verbose:
+                _print_discovered_files("mixed", mixed_files, get_path_string)
 
             for path in mixed_files:
                 if max_files and processed_files_count >= max_files:
@@ -329,6 +335,12 @@ def _numeric_observation_value(row: dict[str, object]) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _print_discovered_files(folder_name: str, files: list[Path], get_path_string) -> None:
+    print(f"DEBUG: Discovered {len(files)} files in {folder_name}:")
+    for path in files:
+        print(f"  - {get_path_string(path)}")
 
 
 def _extract_mixed_files(path: Path, report_lines: list[str]) -> list[dict[str, object]]:
