@@ -191,7 +191,7 @@ def _normalize_oura_rows(
     if total_sleep is not None and awake is not None:
         candidate_tib = round(total_sleep + awake)
         current_time_in_bed = _numeric_value(row_for("time_in_bed_minutes").get("value")) if row_for("time_in_bed_minutes") else None
-        if current_time_in_bed is None or abs(current_time_in_bed - candidate_tib) <= 1:
+        if current_time_in_bed is None:
             set_metric("time_in_bed_minutes", candidate_tib, "minutes")
             time_in_bed = candidate_tib
 
@@ -270,7 +270,7 @@ def _extract_deep_minutes(text: str) -> int | None:
     """Extract Oura deep sleep when OCR renders the duration as `Oh15m` or `0h15m`."""
 
     match = re.search(
-        r"\bdeep(?:\s+sleep)?\b.{0,40}?(?P<duration>(?:[oO0]\s*h\s*\d+\s*m|\d+\s*m))",
+        r"\bdeep(?:\s+sleep)?\b.{0,40}?(?P<duration>(?:(?:[oO0]\s*h\s*|\d+\s*h\s*))?\d+\s*m)",
         text,
         flags=re.IGNORECASE | re.DOTALL,
     )
