@@ -315,9 +315,18 @@ def _mindmonitor_report_from_observations(observations: pd.DataFrame) -> dict[st
                 "source_file": str(source_file),
                 "rows_parsed": int(_sum_metric(group, "mindmonitor_rows") or 0),
                 "observations_extracted": int(len(group)),
-                "session_start": None,
-                "session_end": None,
+                "session_start": _first_metric(group, "mindmonitor_session_start_time"),
+                "session_end": _first_metric(group, "mindmonitor_session_end_time"),
                 "session_minutes": _sum_metric(group, "mindmonitor_session_minutes"),
+                "crossed_midnight": _session_crossed_midnight_from_group(group),
+                "stopped_before_morning": bool(_sum_metric(group, "mindmonitor_stopped_before_morning") or 0),
+                "gap_count_gt_5s": int(_sum_metric(group, "mindmonitor_gap_count_gt_5s") or 0),
+                "max_gap_seconds": _sum_metric(group, "mindmonitor_max_gap_seconds"),
+                "battery_min": _sum_metric(group, "mindmonitor_battery_min"),
+                "battery_max": _sum_metric(group, "mindmonitor_battery_max"),
+                "valid_eeg_rows": int(_sum_metric(group, "mindmonitor_valid_eeg_rows") or 0),
+                "valid_motion_rows": int(_sum_metric(group, "mindmonitor_valid_motion_rows") or 0),
+                "valid_ppg_rows": int(_sum_metric(group, "mindmonitor_valid_ppg_rows") or 0),
                 "error": None,
             }
             for source_file, group in obs.groupby("source_file", sort=True)
@@ -356,6 +365,22 @@ def _format_mindmonitor_report(report: dict[str, object]) -> list[str]:
             start = session.get("session_start") or "unknown start"
             end = session.get("session_end") or "unknown end"
             lines.append(f"  - {source}: {duration if duration is not None else 'unknown'} minutes ({start} to {end})")
+            lines.append(f"    - Crossed midnight: {_yes_no(session.get('crossed_midnight'))}")
+            lines.append(
+                f"    - Truncated before morning (<04:00 end): {_yes_no(session.get('stopped_before_morning'))}"
+            )
+            lines.append(
+                f"    - Battery min/max: {_format_optional_number(session.get('battery_min'))} / "
+                f"{_format_optional_number(session.get('battery_max'))}"
+            )
+            lines.append(
+                f"    - Valid rows: EEG={session.get('valid_eeg_rows', 0)}, "
+                f"motion={session.get('valid_motion_rows', 0)}, PPG={session.get('valid_ppg_rows', 0)}"
+            )
+            lines.append(
+                f"    - Gaps >5s: {session.get('gap_count_gt_5s', 0)}; "
+                f"max gap seconds: {_format_optional_number(session.get('max_gap_seconds'))}"
+            )
     elif files_detected == 0:
         lines.append("- Session duration: no MindMonitor CSV files detected.")
     else:
@@ -370,6 +395,40 @@ def _sum_metric(observations: pd.DataFrame, metric: str) -> float | None:
     if values.dropna().empty:
         return None
     return float(values.sum())
+
+
+def _first_metric(observations: pd.DataFrame, metric: str) -> object | None:
+    values = observations.loc[observations["metric"].eq(metric), "value"]
+    values = values.dropna()
+    if values.empty:
+        return None
+    return values.iloc[0]
+
+
+def _session_crossed_midnight_from_group(observations: pd.DataFrame) -> bool:
+    start = pd.to_datetime(_first_metric(observations, "mindmonitor_session_start_time"), errors="coerce")
+    end = pd.to_datetime(_first_metric(observations, "mindmonitor_session_end_time"), errors="coerce")
+    if pd.isna(start) or pd.isna(end):
+        return False
+    return start.date() != end.date()
+
+
+def _yes_no(value: object) -> str:
+    if isinstance(value, str):
+        return "yes" if value.strip().lower() in {"true", "1", "yes"} else "no"
+    return "yes" if bool(value) else "no"
+
+
+def _format_optional_number(value: object) -> str:
+    if value is None or pd.isna(value):
+        return "unknown"
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if numeric.is_integer():
+        return str(int(numeric))
+    return f"{numeric:.3f}".rstrip("0").rstrip(".")
 
 
 def _infer_mindmonitor_channel_groups(observations: pd.DataFrame) -> list[str]:

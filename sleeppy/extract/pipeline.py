@@ -21,6 +21,7 @@ from .common import (
     extract_pdf_pages_text,
     ocr_pdf_pages_text,
     load_date_mapping,
+    observation,
 )
 
 
@@ -188,6 +189,15 @@ def run_sample_extraction(
                         "session_start": diagnostic_report["session_start"],
                         "session_end": diagnostic_report["session_end"],
                         "session_minutes": diagnostic_report["session_minutes"],
+                        "crossed_midnight": diagnostic_report["crossed_midnight"],
+                        "stopped_before_morning": diagnostic_report["stopped_before_morning"],
+                        "gap_count_gt_5s": diagnostic_report["gap_count_gt_5s"],
+                        "max_gap_seconds": diagnostic_report["max_gap_seconds"],
+                        "battery_min": diagnostic_report["battery_min"],
+                        "battery_max": diagnostic_report["battery_max"],
+                        "valid_eeg_rows": diagnostic_report["valid_eeg_rows"],
+                        "valid_motion_rows": diagnostic_report["valid_motion_rows"],
+                        "valid_ppg_rows": diagnostic_report["valid_ppg_rows"],
                         "error": diagnostic_report["error"],
                     }
                 )
@@ -197,6 +207,8 @@ def run_sample_extraction(
                         f"{get_path_string(path)}: extracted {len(rows)} MindMonitor values; "
                         f"rows={diagnostic_report['rows_parsed']}; "
                         f"session_minutes={diagnostic_report['session_minutes']}; "
+                        f"crossed_midnight={diagnostic_report['crossed_midnight']}; "
+                        f"stopped_before_morning={diagnostic_report['stopped_before_morning']}; "
                         f"channel_groups={', '.join(diagnostic_report['channel_groups']) or '(none)'}"
                     )
 
@@ -248,12 +260,75 @@ def run_sample_extraction(
                 processed_files_count += 1
                 report_lines.append(f"{get_path_string(path)}: extracted {len(rows)} values for mixed device(s).")
 
+    _add_mindmonitor_expected_sleep_window_coverage(observations)
     long_df = ensure_observations_frame(pd.DataFrame(observations, columns=OBSERVATION_COLUMNS))
     
     from .common import CACHE_STATS
     CACHE_STATS.report()
 
     return write_extraction_outputs(long_df, processed_path, outputs_path, report_lines)
+
+
+def _add_mindmonitor_expected_sleep_window_coverage(observations: list[dict[str, object]]) -> None:
+    """Add optional MindMonitor coverage pct when same-night bed-window metrics exist."""
+
+    if not observations:
+        return
+    by_night: dict[str, list[dict[str, object]]] = {}
+    for row in observations:
+        night_date = row.get("night_date")
+        if night_date is None or pd.isna(night_date):
+            continue
+        by_night.setdefault(str(night_date), []).append(row)
+
+    for night_date, rows in by_night.items():
+        expected_minutes = [
+            _numeric_observation_value(row)
+            for row in rows
+            if row.get("metric") == "time_in_bed_minutes"
+            and str(row.get("device", "")).startswith(("Oura", "Samsung"))
+        ]
+        expected_minutes = [value for value in expected_minutes if value is not None and value > 0]
+        if not expected_minutes:
+            continue
+        expected = max(expected_minutes)
+        mindmonitor_session_rows = [
+            row
+            for row in rows
+            if row.get("device") == mind_monitor.DEVICE_NAME
+            and row.get("metric") == "mindmonitor_session_minutes"
+        ]
+        for session_row in mindmonitor_session_rows:
+            session_minutes = _numeric_observation_value(session_row)
+            if session_minutes is None:
+                continue
+            coverage = round((session_minutes / expected) * 100.0, 3)
+            observations.append(
+                observation(
+                    date=night_date,
+                    device=mind_monitor.DEVICE_NAME,
+                    metric="mindmonitor_expected_sleep_window_coverage_pct",
+                    value=coverage,
+                    unit="pct",
+                    source_file=str(session_row.get("source_file", "")),
+                    extraction_method="derived",
+                    confidence="medium",
+                    notes=(
+                        "Derived from MindMonitor session_minutes divided by same-night "
+                        f"Oura/Samsung time_in_bed_minutes ({expected:g}); no sleep staging performed."
+                    ),
+                )
+            )
+
+
+def _numeric_observation_value(row: dict[str, object]) -> float | None:
+    value = row.get("value")
+    if value is None or pd.isna(value):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _extract_mixed_files(path: Path, report_lines: list[str]) -> list[dict[str, object]]:

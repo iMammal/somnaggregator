@@ -473,9 +473,9 @@ def test_mindmonitor_parser_reads_fixture_and_computes_session_metrics():
     assert "columns present=" in str(rows[0]["notes"])
 
 
-def test_mindmonitor_filename_date_takes_precedence(tmp_path):
+def test_mindmonitor_falls_back_to_filename_date_when_timestamps_missing(tmp_path):
     target = tmp_path / "museMonitor_2026-05-10--03-19-42_test.csv"
-    target.write_text(MINDMONITOR_FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
+    target.write_text("RAW_TP9,Heart_Rate\n100,60\n110,62\n", encoding="utf-8")
 
     rows = extract_mindmonitor_file(target)
 
@@ -501,6 +501,48 @@ def test_mindmonitor_missing_bandpower_columns_do_not_error(tmp_path):
     assert _metric_value(rows, "mindmonitor_rows") == 2
     assert "mindmonitor_mean_delta" not in metrics
     assert "mindmonitor_mean_alpha" not in metrics
+
+
+def test_mindmonitor_nonfinite_bandpower_values_are_ignored(tmp_path):
+    target = tmp_path / "sample_nonfinite_bandpower.csv"
+    target.write_text(
+        "\n".join(
+            [
+                "TimeStamp,Delta_TP9,Delta_AF7,RAW_TP9",
+                "2026-05-09 03:19:42,-inf,0,100",
+                "2026-05-09 03:20:42,2,4,110",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    rows = extract_mindmonitor_file(target)
+
+    assert _metric_value(rows, "mindmonitor_mean_delta") == 3
+
+
+def test_mindmonitor_cross_midnight_session_uses_end_date_and_reports_cutoff(tmp_path):
+    target = tmp_path / "museMonitor_2026-07-08--23-11-52_6756279222472698625.csv"
+    target.write_text(
+        "\n".join(
+            [
+                "TimeStamp,RAW_TP9,RAW_AF7,RAW_AF8,RAW_TP10,Accelerometer_X,Accelerometer_Y,Accelerometer_Z,PPG_IR,Heart_Rate,Battery",
+                "2026-07-08 23:11:52,100,101,102,103,0,0,1,50000,60,80",
+                "2026-07-08 23:11:54,110,111,112,113,0,0,1,50100,61,79",
+                "2026-07-09 01:42:41,120,121,122,123,0,0,1,50200,62,78",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    rows = extract_mindmonitor_file(target)
+
+    assert {str(row["night_date"]) for row in rows} == {"2026-07-09"}
+    assert _metric_value(rows, "mindmonitor_session_start_time") == "2026-07-08 23:11:52"
+    assert _metric_value(rows, "mindmonitor_session_end_time") == "2026-07-09 01:42:41"
+    assert _metric_value(rows, "mindmonitor_stopped_before_morning") == 1
+    assert _metric_value(rows, "mindmonitor_gap_count_gt_5s") == 1
+    assert _metric_value(rows, "mindmonitor_max_gap_seconds") == 9047
 
 
 def test_only_folder_mind_monitor_processes_no_unrelated_folders(tmp_path, monkeypatch):

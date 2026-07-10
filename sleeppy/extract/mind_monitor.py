@@ -48,6 +48,12 @@ class MindMonitorDiagnostics:
     valid_eeg_rows: int
     valid_motion_rows: int
     valid_ppg_rows: int
+    crossed_midnight: bool
+    stopped_before_morning: bool
+    gap_count_gt_5s: int
+    max_gap_seconds: float | None
+    battery_min: float | None
+    battery_max: float | None
     notes: str
     error: str | None = None
 
@@ -65,6 +71,12 @@ class MindMonitorDiagnostics:
             "valid_eeg_rows": self.valid_eeg_rows,
             "valid_motion_rows": self.valid_motion_rows,
             "valid_ppg_rows": self.valid_ppg_rows,
+            "crossed_midnight": self.crossed_midnight,
+            "stopped_before_morning": self.stopped_before_morning,
+            "gap_count_gt_5s": self.gap_count_gt_5s,
+            "max_gap_seconds": self.max_gap_seconds,
+            "battery_min": self.battery_min,
+            "battery_max": self.battery_max,
             "notes": self.notes,
             "error": self.error,
         }
@@ -123,6 +135,12 @@ def extract_file_with_details(path: str | Path) -> tuple[list[dict[str, object]]
             valid_eeg_rows=0,
             valid_motion_rows=0,
             valid_ppg_rows=0,
+            crossed_midnight=False,
+            stopped_before_morning=False,
+            gap_count_gt_5s=0,
+            max_gap_seconds=None,
+            battery_min=None,
+            battery_max=None,
             notes=f"MindMonitor CSV parse failed; no sleep staging performed. Error: {exc}",
             error=str(exc),
         )
@@ -147,11 +165,16 @@ def parse_mindmonitor_frame(
     session_end = timestamps.max() if timestamps.notna().any() else pd.NaT
     session_minutes = _session_minutes(session_start, session_end)
     night_date = infer_night_date(source_file, timestamps)
+    crossed_midnight = _crossed_midnight(session_start, session_end)
+    stopped_before_morning = _stopped_before_morning(session_end)
+    gap_count_gt_5s, max_gap_seconds = _timestamp_gap_stats(timestamps)
 
     valid_eeg_rows = _valid_any_numeric_rows(df, EEG_RAW_COLUMNS)
     valid_ppg_rows = _valid_any_numeric_rows(df, PPG_COLUMNS)
     valid_motion_rows = int((_complete_numeric_rows(df, ACCEL_COLUMNS) | _complete_numeric_rows(df, GYRO_COLUMNS)).sum())
     channel_groups = detected_channel_groups(df)
+    battery_min = _min(_numeric_series(df, "Battery"))
+    battery_max = _max(_numeric_series(df, "Battery"))
 
     notes = _build_notes(
         session_start=session_start,
@@ -160,6 +183,10 @@ def parse_mindmonitor_frame(
         valid_eeg_rows=valid_eeg_rows,
         valid_motion_rows=valid_motion_rows,
         valid_ppg_rows=valid_ppg_rows,
+        crossed_midnight=crossed_midnight,
+        stopped_before_morning=stopped_before_morning,
+        gap_count_gt_5s=gap_count_gt_5s,
+        max_gap_seconds=max_gap_seconds,
     )
 
     rows: list[dict[str, object]] = []
@@ -181,7 +208,12 @@ def parse_mindmonitor_frame(
             )
         )
 
+    add_metric("mindmonitor_session_start_time", _format_timestamp(session_start), "datetime")
+    add_metric("mindmonitor_session_end_time", _format_timestamp(session_end), "datetime")
     add_metric("mindmonitor_session_minutes", session_minutes, "minutes")
+    add_metric("mindmonitor_stopped_before_morning", int(stopped_before_morning), "flag")
+    add_metric("mindmonitor_gap_count_gt_5s", gap_count_gt_5s, "count")
+    add_metric("mindmonitor_max_gap_seconds", max_gap_seconds, "seconds")
     add_metric("mindmonitor_rows", len(df), "rows")
     add_metric("mindmonitor_valid_eeg_rows", valid_eeg_rows, "rows")
     add_metric("mindmonitor_valid_motion_rows", valid_motion_rows, "rows")
@@ -204,8 +236,8 @@ def parse_mindmonitor_frame(
         add_metric(f"mindmonitor_mean_hsi_{column.removeprefix('HSI_').lower()}", _mean(_numeric_series(df, column)), "quality")
 
     add_metric("mindmonitor_headband_on_fraction", _headband_on_fraction(df), "fraction")
-    add_metric("mindmonitor_battery_min", _min(_numeric_series(df, "Battery")), "pct")
-    add_metric("mindmonitor_battery_max", _max(_numeric_series(df, "Battery")), "pct")
+    add_metric("mindmonitor_battery_min", battery_min, "pct")
+    add_metric("mindmonitor_battery_max", battery_max, "pct")
 
     for band in BANDS:
         band_mean = _band_mean(df, band)
@@ -225,19 +257,36 @@ def parse_mindmonitor_frame(
         valid_eeg_rows=valid_eeg_rows,
         valid_motion_rows=valid_motion_rows,
         valid_ppg_rows=valid_ppg_rows,
+        crossed_midnight=crossed_midnight,
+        stopped_before_morning=stopped_before_morning,
+        gap_count_gt_5s=gap_count_gt_5s,
+        max_gap_seconds=max_gap_seconds,
+        battery_min=battery_min,
+        battery_max=battery_max,
         notes=notes,
     )
     return rows, diagnostics
 
 
 def infer_night_date(source_file: str | Path, timestamps: pd.Series | None = None) -> str | None:
-    """Infer night_date from MindMonitor filename first, then first valid TimeStamp."""
+    """Infer night_date from MindMonitor timestamps first, then filename date."""
 
+    if timestamps is not None and timestamps.notna().any():
+        valid = timestamps.dropna().sort_values()
+        start = valid.iloc[0]
+        end = valid.iloc[-1]
+        if _crossed_midnight(start, end):
+            return end.date().isoformat()
+        if (
+            start.hour >= 18
+            and end.date() == (start + pd.Timedelta(days=1)).date()
+            and end.hour < 12
+        ):
+            return end.date().isoformat()
+        return start.date().isoformat()
     match = FILENAME_DATE_RE.search(str(source_file))
     if match:
         return match.group("date")
-    if timestamps is not None and timestamps.notna().any():
-        return timestamps.dropna().iloc[0].date().isoformat()
     return None
 
 
@@ -310,6 +359,31 @@ def _session_minutes(start: pd.Timestamp, end: pd.Timestamp) -> float | None:
     return round(minutes, 3)
 
 
+def _crossed_midnight(start: pd.Timestamp, end: pd.Timestamp) -> bool:
+    if pd.isna(start) or pd.isna(end):
+        return False
+    return start.date() != end.date()
+
+
+def _stopped_before_morning(end: pd.Timestamp) -> bool:
+    if pd.isna(end):
+        return False
+    return end.hour < 4
+
+
+def _timestamp_gap_stats(timestamps: pd.Series) -> tuple[int, float | None]:
+    if timestamps is None or not timestamps.notna().any():
+        return 0, None
+    valid = timestamps.dropna().sort_values()
+    if len(valid) < 2:
+        return 0, 0.0
+    gaps = valid.diff().dt.total_seconds().dropna()
+    positive_gaps = gaps[gaps >= 0]
+    if positive_gaps.empty:
+        return 0, 0.0
+    return int((positive_gaps > 5).sum()), float(positive_gaps.max())
+
+
 def _numeric_series(df: pd.DataFrame, column: str) -> pd.Series:
     if column not in df:
         return pd.Series(dtype="float64")
@@ -353,7 +427,7 @@ def _band_mean(df: pd.DataFrame, band: str) -> float | None:
     if not columns:
         return None
     numeric = _numeric_frame(df, columns)
-    values = pd.Series(numeric.to_numpy().ravel()).dropna()
+    values = _finite_values(pd.Series(numeric.to_numpy().ravel()))
     values = values[values != 0]
     return _mean(values)
 
@@ -386,28 +460,35 @@ def _headband_value(value: object) -> float | None:
 
 
 def _mean(values: pd.Series) -> float | None:
-    values = values.dropna()
+    values = _finite_values(values)
     return None if values.empty else float(values.mean())
 
 
 def _median(values: pd.Series) -> float | None:
-    values = values.dropna()
+    values = _finite_values(values)
     return None if values.empty else float(values.median())
 
 
 def _quantile(values: pd.Series, quantile: float) -> float | None:
-    values = values.dropna()
+    values = _finite_values(values)
     return None if values.empty else float(values.quantile(quantile))
 
 
 def _min(values: pd.Series) -> float | None:
-    values = values.dropna()
+    values = _finite_values(values)
     return None if values.empty else float(values.min())
 
 
 def _max(values: pd.Series) -> float | None:
-    values = values.dropna()
+    values = _finite_values(values)
     return None if values.empty else float(values.max())
+
+
+def _finite_values(values: pd.Series) -> pd.Series:
+    numeric = pd.to_numeric(values, errors="coerce").dropna()
+    if numeric.empty:
+        return numeric
+    return numeric[numeric.map(math.isfinite)]
 
 
 def _store_value(value: object) -> object:
@@ -430,6 +511,10 @@ def _build_notes(
     valid_eeg_rows: int,
     valid_motion_rows: int,
     valid_ppg_rows: int,
+    crossed_midnight: bool,
+    stopped_before_morning: bool,
+    gap_count_gt_5s: int,
+    max_gap_seconds: float | None,
 ) -> str:
     start_text = _format_timestamp(session_start) or "unknown"
     end_text = _format_timestamp(session_end) or "unknown"
@@ -437,7 +522,10 @@ def _build_notes(
         f"MindMonitor CSV sensor log; session start={start_text}; session end={end_text}; "
         f"columns present={', '.join(columns_present) if columns_present else '(none)'}; "
         f"valid EEG rows={valid_eeg_rows}; valid motion rows={valid_motion_rows}; "
-        f"valid PPG rows={valid_ppg_rows}; no sleep staging performed."
+        f"valid PPG rows={valid_ppg_rows}; crossed midnight={crossed_midnight}; "
+        f"stopped before morning={stopped_before_morning}; gaps >5s={gap_count_gt_5s}; "
+        f"max gap seconds={max_gap_seconds if max_gap_seconds is not None else 'unknown'}; "
+        f"no sleep staging performed."
     )
 
 
