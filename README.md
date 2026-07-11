@@ -6,6 +6,8 @@ SleepPy is a personal sleep-analysis workspace for aligning and comparing nightl
 - Oura Ring 3 toe screenshots or exported summaries
 - Samsung Watch / SleepWatch data
 - Muse sleep EEG screenshots or PDF summaries
+- Muse S / MindMonitor sensor CSVs
+- Oura API v2 cached JSON
 - ResMed AirSense 11 CPAP data from OSCAR or SleepScope exports
 
 This project is for exploratory wellness analysis only. It is not medical diagnosis, treatment advice, or a replacement for clinician review.
@@ -77,6 +79,39 @@ sample.ipynb   # Main extraction and analysis notebook
 4. Open `sample.ipynb` to load the processed CSVs, inspect nightly tables, and plot sleep duration, HRV, SpO2, and CPAP AHI over time.
 
 The extractor also scans image/PDF files directly under `data/raw/` as a convenience for the current project layout. Use `py -m sleeppy.extract --no-legacy-raw` to scan only `data/raw/samples/`.
+
+## Oura API Ingestion
+
+Oura API support is additive; the screenshot parser remains available. API JSON contains personal health data and should not be committed.
+
+1. Create a personal Oura API token in your Oura account.
+2. Set it in your shell or a local `.env` file:
+
+   ```powershell
+   $env:OURA_TOKEN = "your-token"
+   ```
+
+3. Fetch a date range into the raw API cache:
+
+   ```powershell
+   py -m sleeppy.api.oura_fetch --start-date 2026-07-09 --end-date 2026-07-09
+   ```
+
+   This writes cached JSON under `data/raw/api/oura/`, which is ignored by git.
+
+4. Run extraction from cached API data:
+
+   ```powershell
+   py -m sleeppy.extract --no-legacy-raw --include-oura-api
+   ```
+
+   To process only cached Oura API files:
+
+   ```powershell
+   py -m sleeppy.extract --no-legacy-raw --only-folder oura_api
+   ```
+
+5. In `sample.ipynb`, set `RUN_EXTRACTION=True` after fetching new API JSON. The notebook can then compare `Oura API` rows with Oura screenshot rows on overlapping dates and metrics.
 
 ## Helper Modules
 

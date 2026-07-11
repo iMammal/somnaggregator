@@ -17,6 +17,7 @@ def main() -> None:
     parser.add_argument("--max-files", type=int, help="Limit number of files to process.")
     parser.add_argument("--verbose", action="store_true", help="Verbose reporting.")
     parser.add_argument("--no-legacy-raw", action="store_true", help="Do not also scan files directly under data/raw.")
+    parser.add_argument("--include-oura-api", action="store_true", help="Also read cached Oura API JSON under data/raw/api/oura.")
     args = parser.parse_args()
 
     summary, observations, report_path = run_sample_extraction(
@@ -28,6 +29,7 @@ def main() -> None:
         only_files=args.only_file,
         max_files=args.max_files,
         verbose=args.verbose,
+        include_oura_api=args.include_oura_api,
     )
     print(f"Wrote {len(summary)} nightly rows and {len(observations)} observations.")
     print(f"Report: {report_path}")

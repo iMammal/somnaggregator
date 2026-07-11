@@ -213,7 +213,7 @@ def build_extraction_report(
     lines = [
         "# SleepPy Extraction Report",
         "",
-        "This report summarizes automated first-pass extraction from screenshots, PDFs, and CSV sensor logs.",
+        "This report summarizes automated first-pass extraction from screenshots, PDFs, CSV sensor logs, and cached API JSON.",
         "",
         "This is exploratory wellness data analysis only. It is not medical diagnosis, treatment advice, or a replacement for clinician review.",
         "",

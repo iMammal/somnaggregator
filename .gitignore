@@ -7,10 +7,12 @@ __pycache__/
 .venv/
 venv/
 env/
+.env
 
 # Generated analysis outputs
 data/interim/*
 !data/interim/.gitkeep
+data/interim/api_cache/
 data/processed/*
 !data/processed/.gitkeep
 outputs/*
@@ -18,6 +20,7 @@ outputs/*
 
 # Real personal health data should not be committed.
 data/raw/*
+data/raw/api/
 !data/raw/.gitkeep
 !data/raw/samples/
 !data/raw/samples/**/

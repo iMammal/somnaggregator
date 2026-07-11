@@ -10,7 +10,7 @@ import pandas as pd
 from sleeppy.quality import write_extraction_outputs
 from sleeppy.schema import OBSERVATION_COLUMNS, ensure_observations_frame
 
-from . import mind_monitor, muse, oscar, oura, samsung
+from . import mind_monitor, muse, oscar, oura, oura_api, samsung
 from .common import (
     SUPPORTED_EXTENSIONS,
     check_ocr_environment,
@@ -44,6 +44,7 @@ def run_sample_extraction(
     only_files: list[str] | None = None,
     max_files: int | None = None,
     verbose: bool = False,
+    include_oura_api: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, Path]:
     """Extract observations from sample folders and write normalized outputs."""
     from .common import set_verbose
@@ -95,6 +96,29 @@ def run_sample_extraction(
     last_time = log_time("Initialization")
 
     processed_files_count = 0
+
+    if include_oura_api or (only_folders and "oura_api" in only_folders):
+        api_dir = raw_samples_path.parent / "api" / "oura"
+        files = oura_api.find_files(api_dir)
+        if only_files:
+            files = [f for f in files if f.name in only_files or str(f) in only_files]
+        if verbose:
+            _print_discovered_files("oura_api", files, get_path_string)
+        extracted_files = 0
+        for path in files:
+            if max_files and processed_files_count >= max_files:
+                break
+            rows = oura_api.extract_file(path)
+            observations.extend(rows)
+            processed_files_count += 1
+            if rows:
+                extracted_files += 1
+            if verbose:
+                report_lines.append(f"{get_path_string(path)}: extracted {len(rows)} Oura API values.")
+        if not files:
+            report_lines.append(f"{get_path_string(api_dir)}: no cached Oura API JSON files found.")
+        elif not verbose:
+            report_lines.append(f"{get_path_string(api_dir)}: Oura API cache files detected; {extracted_files} of {len(files)} produced values.")
 
     for folder_name, (device, parser) in DEVICE_FOLDERS.items():
         if only_folders and folder_name not in only_folders:
